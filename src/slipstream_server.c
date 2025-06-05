@@ -31,6 +31,8 @@ char* server_domain_name = NULL;
 size_t server_domain_name_len = 0;
 
 ssize_t server_encode(void* slot_p, void* callback_ctx, unsigned char** dest_buf, const unsigned char* src_buf, size_t src_buf_len, size_t* segment_len, struct sockaddr_storage* peer_addr, struct sockaddr_storage* local_addr) {
+    *dest_buf = NULL;
+
     // we don't support segmentation in the server
     assert(segment_len == NULL || *segment_len == 0 || *segment_len == src_buf_len);
 

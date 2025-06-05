@@ -91,6 +91,8 @@ ssize_t client_encode_segment(dns_packet_t* packet, size_t* packet_len, const un
 }
 
 ssize_t client_encode(void* slot_p, void* callback_ctx, unsigned char** dest_buf, const unsigned char* src_buf, size_t src_buf_len, size_t* segment_len, struct sockaddr_storage* peer_addr, struct sockaddr_storage* local_addr) {
+    *dest_buf = NULL;
+
     // optimize path for single segment
     if (src_buf_len <= *segment_len) {
 #ifdef NOENCODE

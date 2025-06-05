@@ -126,7 +126,7 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
             slot->path_id = -1;
             nb_slots_written++;
 
-            unsigned char* decoded;
+            unsigned char* decoded = NULL;
             bytes_recv = param->decode(slot, thread_ctx->loop_callback_ctx, &decoded,
                 (const unsigned char*)buffer, bytes_recv, &peer_addr, &local_addr);
             if (bytes_recv < 0) {
@@ -208,7 +208,7 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
 
             int sock_err = 0;
             int bytes_sent;
-            unsigned char* encoded;
+            unsigned char* encoded = NULL;
             size_t segment_len = send_msg_size == 0 ? send_length : send_msg_size;
             ssize_t encoded_len = param->encode(slot, loop_callback_ctx, &encoded,
                 (const unsigned char*)send_buffer, send_length, &segment_len, &peer_addr, &local_addr);
@@ -279,7 +279,7 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
 
             int sock_err = 0;
             int bytes_sent;
-            unsigned char* encoded;
+            unsigned char* encoded = NULL;
             size_t segment_len = send_msg_size == 0 ? send_length : send_msg_size;
             ssize_t encoded_len = param->encode(slot, loop_callback_ctx, &encoded,
                 (const unsigned char*)send_buffer, send_length, &segment_len, &peer_addr, &local_addr);
