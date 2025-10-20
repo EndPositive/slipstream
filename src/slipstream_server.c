@@ -402,7 +402,17 @@ void* slipstream_io_copy(void* arg) {
     slipstream_server_ctx_t* server_ctx = args->server_ctx;
     slipstream_server_stream_ctx_t* stream_ctx = args->stream_ctx;
 
-    if (connect(socket, (struct sockaddr*)&server_ctx->upstream_addr, sizeof(server_ctx->upstream_addr)) < 0) {
+    socklen_t addr_len;
+    if (server_ctx->upstream_addr.ss_family == AF_INET) {
+        addr_len = sizeof(struct sockaddr_in);
+    } else if (server_ctx->upstream_addr.ss_family == AF_INET6) {
+        addr_len = sizeof(struct sockaddr_in6);
+    } else {
+        perror("Invalid address family");
+        return NULL;
+    }
+
+    if (connect(socket, (struct sockaddr*)&server_ctx->upstream_addr, addr_len) < 0) {
         perror("connect() failed");
         return NULL;
     }
