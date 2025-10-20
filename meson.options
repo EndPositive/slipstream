@@ -1,0 +1,3 @@
+# Enable picoquic-log
+option('build_loglib', type : 'boolean', value: false)
+

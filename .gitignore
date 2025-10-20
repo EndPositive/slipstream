@@ -5,6 +5,7 @@ qlog/
 .tmp.*
 .DS_Store
 build/
+subprojects/.wraplock
 
 sample_ticket_store.bin
 sample_token_store.bin
@@ -13,3 +14,5 @@ netem.sh
 docker-compose-resolver.yaml
 unbound.conf
 unbound2.conf
+
+.cache

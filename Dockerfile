@@ -2,35 +2,32 @@ FROM debian:bookworm-slim AS builder
 
 WORKDIR /usr/src/app
 
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y \
+    python3-pip \
     cmake \
     git \
     pkg-config \
     libssl-dev \
     ninja-build \
-    clang
+    gcc g++ && \
+    pip3 install --user --break-system-packages meson
 
 COPY . .
 
-RUN --mount=type=cache,target=/usr/src/app/cmake-build-release \
-    cmake \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_MAKE_PROGRAM=ninja \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++ \
-    -DCMAKE_C_FLAGS=-static-libgcc \
-    -DCMAKE_CXX_FLAGS=-static-libstdc++ \
-    -G Ninja \
-    -S /usr/src/app \
-    -B /usr/src/app/cmake-build-release && \
-    cmake \
-    --build /usr/src/app/cmake-build-release \
-    --target slipstream-client slipstream-server \
-    -j 18 && \
-    cp cmake-build-release/slipstream-client . && \
-    cp cmake-build-release/slipstream-server .
+RUN /root/.local/bin/meson setup \
+    -Db_lto=true \
+    --buildtype=release \
+    --warnlevel=0 \
+    -Ddefault_library=static \
+    meson-build-release && \
+    ninja -C meson-build-release && \
+    cp /usr/src/app/meson-build-release/slipstream-client . && \
+    cp /usr/src/app/meson-build-release/slipstream-server .
 
 FROM gcr.io/distroless/base-debian12 AS runtime
 

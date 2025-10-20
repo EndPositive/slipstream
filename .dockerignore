@@ -3,4 +3,7 @@
 !extern/
 !include/
 !src/
-!CMakeLists.txt
+!subprojects/
+!meson.build
+!meson.options
+!meson_options.txt
