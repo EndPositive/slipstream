@@ -15,7 +15,13 @@ typedef struct st_slipstream_server_cc_t {
 
 static void slipstream_server_cc_init(picoquic_cnx_t * cnx, picoquic_path_t* path_x, uint64_t current_time)
 {
-    slipstream_server_cc_t* state = (slipstream_server_cc_t*)malloc(sizeof(slipstream_server_cc_t));
+    (void)cnx;
+    (void)current_time;
+
+    slipstream_server_cc_t* state = (slipstream_server_cc_t*)calloc(1, sizeof(slipstream_server_cc_t));
+    if (state == NULL) {
+        return;
+    }
     path_x->congestion_alg_state = (void*)state;
 }
 
