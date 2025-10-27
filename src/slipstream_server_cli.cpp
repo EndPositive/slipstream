@@ -1,26 +1,13 @@
 #include <iostream>
-#include <string>
-#include <vector>
 #include <picosocks.h>
 #include "slipstream.h"
-#include "quick_arg_parser.hpp"
+#include "slipstream_server_cli_args.hpp"
+#include "slipstream_utils.h"
 
-struct ServerArgs : MainArguments<ServerArgs> {
-    using MainArguments<ServerArgs>::MainArguments;
-
-    int listen_port = option("dns-listen-port", 'l', "DNS listen port (default: 53)") = 53;
-    std::string target_address = option("target-address", 'a', "Target server address (default: 127.0.0.1:5201)") = "127.0.0.1:5201";
-    std::string cert = option("cert", 'c', "Certificate file path (default: certs/cert.pem)") = "certs/cert.pem";
-    std::string key = option("key", 'k', "Private key file path (default: certs/key.pem)") = "certs/key.pem";
-    std::string domain = option("domain", 'd', "Domain name this server is authoritative for (Required)");
-
-    static std::string help(const std::string& program_name) {
-        return "slipstream-server - A high-performance covert channel over DNS (server)\n\n" 
-               "Usage: " + program_name + " [options]";
-    }
-
-    static const std::string version;
-};
+std::string ServerArgs::help(const std::string& program_name) {
+    return "slipstream-server - A high-performance covert channel over DNS (server)\n\n"
+           "Usage: " + program_name + " [options]";
+}
 
 const std::string ServerArgs::version = "slipstream-server 0.1";
 
@@ -44,7 +31,7 @@ int main(int argc, char** argv) {
     /* Check mandatory server arguments */
     if (args.domain.empty()) {
         std::cerr << "Server error: Missing required --domain option" << std::endl;
-        exit(1);
+        return 1;
     }
 
     // Process target address
@@ -52,20 +39,15 @@ int main(int argc, char** argv) {
     char server_name[256];
     int server_port = 5201;
 
-    if (sscanf(args.target_address.c_str(), "%255[^:]:%d", server_name, &server_port) < 1) {
-        strncpy(server_name, args.target_address.c_str(), sizeof(server_name) - 1);
-        server_name[sizeof(server_name) - 1] = '\0';
-    }
-
-    if (server_port <= 0 || server_port > 65535) {
-        std::cerr << "Invalid port number in target address: " << args.target_address << std::endl;
-        exit(1);
+    if (!slipstream_parse_host_port(args.target_address.c_str(), server_name, sizeof(server_name), &server_port, 5201)) {
+        std::cerr << "Invalid target address: " << args.target_address << std::endl;
+        return 1;
     }
 
     int is_name = 0;
     if (picoquic_get_server_address(server_name, server_port, &target_address, &is_name) != 0) {
         std::cerr << "Cannot resolve target address '" << server_name << "' port " << server_port << std::endl;
-        exit(1);
+        return 1;
     }
 
     exit_code = picoquic_slipstream_server(
@@ -80,5 +62,5 @@ int main(int argc, char** argv) {
     WSACleanup();
 #endif
 
-    exit(exit_code);
+    return exit_code;
 }

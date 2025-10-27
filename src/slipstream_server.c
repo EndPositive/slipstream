@@ -29,6 +29,9 @@
 
 volatile sig_atomic_t should_shutdown = 0;
 
+#define SLIPSTREAM_SHUTDOWN_GRACE_US 2000000ull
+#define SLIPSTREAM_SHUTDOWN_MIN_DRAIN_US 50000ull
+
 void server_sighandler(int signum) {
     DBG_PRINTF("Signal %d received", signum);
     should_shutdown = 1;
@@ -204,6 +207,8 @@ typedef struct st_slipstream_server_ctx_t {
     struct sockaddr_storage upstream_addr;
     struct st_slipstream_server_ctx_t* prev_ctx;
     struct st_slipstream_server_ctx_t* next_ctx;
+    uint64_t shutdown_started_at;
+    bool shutdown_forced_logged;
 } slipstream_server_ctx_t;
 
 slipstream_server_stream_ctx_t* slipstream_server_create_stream_ctx(slipstream_server_ctx_t* server_ctx,
@@ -315,26 +320,71 @@ int slipstream_server_sockloop_callback(picoquic_quic_t* quic, picoquic_packet_l
         break;
     case picoquic_packet_loop_before_select:
         if (should_shutdown) {
-            // Iterate and close all connections
             picoquic_cnx_t* cnx = picoquic_get_first_cnx(quic);
             bool has_unclosed = false;
+            uint64_t now = picoquic_current_time();
             while (cnx != NULL) {
-                if (cnx->cnx_state != picoquic_state_disconnected) {
+                picoquic_cnx_t* next = picoquic_get_next_cnx(cnx);
+                picoquic_state_enum cnx_state = cnx->cnx_state;
+                void* ctx = picoquic_get_callback_context(cnx);
+                slipstream_server_ctx_t* server_ctx =
+                    (ctx != NULL && ctx != default_ctx) ? (slipstream_server_ctx_t*)ctx : NULL;
+
+                if (cnx_state != picoquic_state_disconnected) {
                     has_unclosed = true;
+                    if (cnx_state < picoquic_state_disconnecting) {
+                        picoquic_close(cnx, 0);
+                        cnx_state = cnx->cnx_state;
+                    }
+
+                    if (server_ctx != NULL && server_ctx->shutdown_started_at == 0) {
+                        server_ctx->shutdown_started_at = now;
+                        server_ctx->shutdown_forced_logged = false;
+                    }
+
+                    bool backlog_empty = picoquic_is_cnx_backlog_empty(cnx);
+                    uint64_t deadline = 0;
+                    if (server_ctx != NULL && server_ctx->shutdown_started_at != 0) {
+                        deadline = server_ctx->shutdown_started_at + SLIPSTREAM_SHUTDOWN_GRACE_US;
+                    }
+                    bool timed_out = deadline != 0 && now >= deadline;
+
+                    bool ready_to_disconnect = false;
+                    if (server_ctx != NULL && server_ctx->shutdown_started_at != 0) {
+                        uint64_t elapsed = now - server_ctx->shutdown_started_at;
+                        if (cnx_state == picoquic_state_closing && backlog_empty &&
+                            elapsed >= SLIPSTREAM_SHUTDOWN_MIN_DRAIN_US) {
+                            ready_to_disconnect = true;
+                        }
+                    }
+                    if (cnx_state == picoquic_state_draining || timed_out) {
+                        ready_to_disconnect = true;
+                    }
+
+                    if (ready_to_disconnect) {
+                        if (timed_out && server_ctx != NULL && !server_ctx->shutdown_forced_logged) {
+                            server_ctx->shutdown_forced_logged = true;
+                            DBG_PRINTF("Grace period elapsed; forcing shutdown of connection.", NULL);
+                        }
+                        picoquic_connection_disconnect(cnx);
+                        cnx_state = cnx->cnx_state;
+                        server_ctx = NULL;
+                    }
                 }
-
-                picoquic_close(cnx, 0); // 0 = no error, or use appropriate error code
-
-                if (cnx->cnx_state == picoquic_state_draining) {
-                    picoquic_connection_disconnect(cnx);
-                }
-
-                cnx = picoquic_get_next_cnx(cnx);
+                cnx = next;
             }
-
             if (!has_unclosed) {
                 DBG_PRINTF("All connections closed, shutting down.", NULL);
                 return -1;
+            } else if (default_ctx != NULL && default_ctx->thread_ctx != NULL) {
+                picoquic_wake_up_network_thread(default_ctx->thread_ctx);
+            }
+        } else if (default_ctx != NULL) {
+            slipstream_server_ctx_t* server_ctx = default_ctx;
+            while (server_ctx != NULL) {
+                server_ctx->shutdown_started_at = 0;
+                server_ctx->shutdown_forced_logged = false;
+                server_ctx = server_ctx->next_ctx;
             }
         }
     default:
@@ -768,4 +818,3 @@ int picoquic_slipstream_server(int server_port, const char* server_cert, const c
 
     return ret;
 }
-

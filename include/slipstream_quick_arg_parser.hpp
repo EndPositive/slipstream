@@ -1,0 +1,6 @@
+#ifndef SLIPSTREAM_QUICK_ARG_PARSER_HPP
+#define SLIPSTREAM_QUICK_ARG_PARSER_HPP
+
+#include "quick_arg_parser.hpp"
+
+#endif // SLIPSTREAM_QUICK_ARG_PARSER_HPP

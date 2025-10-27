@@ -56,17 +56,31 @@ cmake = import('cmake')
 picoquic_opts = cmake.subproject_options()
 
 # Add necessary CMake defines
+sanitizers = get_option('b_sanitize')
+enable_asan = sanitizers != 'none' and 'address' in sanitizers
+enable_ubsan = sanitizers != 'none' and 'undefined' in sanitizers
+
 picoquic_opts.add_cmake_defines(
   [
     {'PICOQUIC_FETCH_PTLS': 'ON'},
     {'BUILD_HTTP': 'OFF'},
-    {'ENABLE_ASAN': 'OFF'},
-    {'ENABLE_UBSAN': 'OFF'},
     {'CMAKE_POLICY_VERSION_MINIMUM': '3.5'},
     {'BUILD_DEMO': 'OFF'},
     {'BUILD_TESTING': 'OFF'},
+    {'ENABLE_ASAN': enable_asan ? 'ON' : 'OFF'},
+    {'ENABLE_UBSAN': enable_ubsan ? 'ON' : 'OFF'},
   ],
 )
+# Allow offline fetches of picotls by pointing CMake's FetchContent to a cached checkout.
+picotls_source_override = get_option('picotls_source_dir')
+if picotls_source_override != ''
+  picoquic_opts.add_cmake_defines(
+    [
+      {'FETCHCONTENT_SOURCE_DIR_PICOTLS': picotls_source_override},
+      {'FETCHCONTENT_UPDATES_DISCONNECTED': 'ON'},
+    ],
+  )
+endif
 # Configure picoquic debug printing
 if get_option('buildtype').startswith('debug')
   picoquic_opts.add_cmake_defines(
@@ -99,6 +113,20 @@ picoquic_proj = cmake.subproject(
 slipstream_cli_deps = [
   dependency('threads'), # for picoquic
   picoquic_proj.dependency('picoquic-core'),
+]
+
+# Ensure picotls static libs requested by picoquic are linked explicitly.
+picotls_components = [
+  'picotls-core',
+  'picotls-minicrypto',
+  'picotls-fusion',
+  'picotls-openssl',
+]
+slipstream_cli_deps += [
+  picoquic_proj.dependency('picotls-core'),
+  picoquic_proj.dependency('picotls-minicrypto'),
+  picoquic_proj.dependency('picotls-fusion'),
+  picoquic_proj.dependency('picotls-openssl'),
 ]
 # Link optional picoquic logging
 if loglib_enabled
@@ -137,3 +165,5 @@ executable(
   link_args: link_args,
   build_by_default: true,
 )
+
+subdir('tests')
