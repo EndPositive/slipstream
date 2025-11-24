@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <stdbool.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 
@@ -44,17 +43,6 @@
 #include "picoquic_packet_loop.h"
 #include "slipstream_slot.h"
 
-static picoquic_cnx_t* slipstream_find_live_cnx(picoquic_quic_t* quic, picoquic_cnx_t* target) {
-    picoquic_cnx_t* cnx = picoquic_get_first_cnx(quic);
-    while (cnx != NULL) {
-        if (cnx == target) {
-            return cnx;
-        }
-        cnx = picoquic_get_next_cnx(cnx);
-    }
-    return NULL;
-}
-
 # if defined(UDP_SEGMENT)
 static int udp_gso_available = 1;
 #else
@@ -68,8 +56,6 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
     const picoquic_packet_loop_cb_fn loop_callback = thread_ctx->loop_callback;
     void* loop_callback_ctx = thread_ctx->loop_callback_ctx;
     slot_t slots[PICOQUIC_PACKET_LOOP_RECV_MAX] = {0};
-    slot_t prev_slots[PICOQUIC_PACKET_LOOP_RECV_MAX] = {0};
-    size_t prev_slots_count = 0;
 
     size_t send_buffer_size = param->socket_buffer_size;
     size_t send_msg_size = 0;
@@ -99,7 +85,6 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
 
         size_t nb_slots_written = 0;
         size_t nb_packet_received = 0;
-        bool wake_up_received = false;
         while (nb_slots_written < PICOQUIC_PACKET_LOOP_RECV_MAX) {
             int64_t delta_t = 0;
 
@@ -129,7 +114,6 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
             }
 
             if (bytes_recv == 0 && is_wake_up_event) {
-                wake_up_received = true;
                 const int ret = loop_callback(quic, picoquic_packet_loop_wake_up, loop_callback_ctx, NULL);
                 if (ret < 0) {
                     return ret;
@@ -185,26 +169,10 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
             }
         }
 
-        if (!param->is_client && nb_slots_written == 0 && wake_up_received && prev_slots_count > 0) {
-            size_t reused = 0;
-            size_t next_prev_count = 0;
-            for (size_t i = 0; i < prev_slots_count; i++) {
-                picoquic_cnx_t* live_cnx = slipstream_find_live_cnx(quic, prev_slots[i].cnx);
-                if (live_cnx != NULL && live_cnx->cnx_state != picoquic_state_disconnected) {
-                    slot_t cached = prev_slots[i];
-                    cached.cnx = live_cnx;
-                    slots[reused++] = cached;
-                    prev_slots[next_prev_count++] = cached;
-                }
-            }
-            nb_slots_written = reused;
-            prev_slots_count = next_prev_count;
-        }
-
         const uint64_t loop_time = picoquic_current_time();
         size_t nb_packets_sent = 0;
         size_t nb_slots_read = 0;
-        size_t max_slots = param->is_client ? PICOQUIC_PACKET_LOOP_SEND_MAX : nb_slots_written;
+        const size_t max_slots = param->is_client ? PICOQUIC_PACKET_LOOP_SEND_MAX : nb_slots_written;
         while (nb_slots_read < max_slots) {
             uint8_t send_buffer[send_buffer_size];
             slot_t* slot = &slots[nb_slots_read];
@@ -275,15 +243,6 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
             }
 
             nb_packets_sent++;
-        }
-
-        if (!param->is_client && nb_slots_written > 0) {
-            prev_slots_count = 0;
-            for (size_t i = 0; i < nb_slots_written && i < PICOQUIC_PACKET_LOOP_RECV_MAX; i++) {
-                if (slots[i].cnx != NULL && slots[i].cnx->cnx_state != picoquic_state_disconnected) {
-                    prev_slots[prev_slots_count++] = slots[i];
-                }
-            }
         }
 
         if (!param->is_client || nb_packet_received == 0) {

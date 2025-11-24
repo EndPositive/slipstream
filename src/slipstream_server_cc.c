@@ -46,6 +46,12 @@ static void slipstream_server_cc_delete(picoquic_path_t* path_x) {
 static void slipstream_server_cc_observe(picoquic_path_t* path_x, uint64_t* cc_state, uint64_t* cc_param)
 {
     slipstream_server_cc_t* state = (slipstream_server_cc_t*)path_x->congestion_alg_state;
+    if (state == NULL) {
+        *cc_state = (uint64_t)slipstream_server_cc_alg_none;
+        *cc_param = UINT64_MAX;
+        return;
+    }
+
     *cc_state = (uint64_t)state->state;
     *cc_param = UINT64_MAX;
 }

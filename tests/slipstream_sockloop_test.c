@@ -133,6 +133,8 @@ static int (*prepare_next_packet_impl)(picoquic_quic_t*, uint64_t, uint8_t*, siz
     = unexpected_prepare_next_packet;
 static int (*sendmsg_impl)(SOCKET_TYPE, struct sockaddr*, struct sockaddr*, int, const char*, int, int, int*)
     = unexpected_sendmsg;
+static int sendmsg_call_count = 0;
+static int select_call_count = 0;
 
 static void reset_mocks(void) {
     select_impl = unexpected_select;
@@ -144,6 +146,8 @@ static void reset_mocks(void) {
     sendmsg_impl = unexpected_sendmsg;
     mock_current_time_value = 0;
     mock_wake_delay_value = 0;
+    sendmsg_call_count = 0;
+    select_call_count = 0;
 }
 
 int picoquic_packet_loop_select(picoquic_socket_ctx_t* s_ctx, int nb_sockets, struct sockaddr_storage* addr_from,
@@ -447,6 +451,59 @@ static ssize_t encode_returns_shorter_segment(void* slot_p, void* callback_ctx, 
     return 8;
 }
 
+static ssize_t encode_returns_full_segment(void* slot_p, void* callback_ctx, unsigned char** dest_buf,
+    const unsigned char* src_buf, size_t src_buf_len, size_t* segment_len, struct sockaddr_storage* peer_addr,
+    struct sockaddr_storage* local_addr) {
+    (void)slot_p;
+    (void)callback_ctx;
+    (void)peer_addr;
+    (void)local_addr;
+    *segment_len = src_buf_len;
+    *dest_buf = (unsigned char*)malloc(src_buf_len);
+    memset(*dest_buf, 0xCD, src_buf_len);
+    return (ssize_t)src_buf_len;
+}
+
+static int select_returns_payload_then_wakeup(picoquic_socket_ctx_t* s_ctx, int nb_sockets,
+    struct sockaddr_storage* addr_from, struct sockaddr_storage* addr_dest, int* dest_if,
+    unsigned char* received_ecn, uint8_t* buffer, int buffer_max, int64_t delta_t, int* is_wake_up_event,
+    picoquic_network_thread_ctx_t* thread_ctx, int* socket_rank) {
+    (void)s_ctx;
+    (void)nb_sockets;
+    (void)addr_from;
+    (void)addr_dest;
+    (void)dest_if;
+    (void)received_ecn;
+    (void)buffer;
+    (void)buffer_max;
+    (void)delta_t;
+    (void)socket_rank;
+
+    select_call_count++;
+    if (select_call_count == 1) {
+        *is_wake_up_event = 0;
+        return 24;
+    }
+
+    *is_wake_up_event = 1;
+    thread_ctx->thread_should_close = 1;
+    return 0;
+}
+
+static int sendmsg_counts_calls(SOCKET_TYPE fd, struct sockaddr* addr_dest, struct sockaddr* addr_from, int dest_if,
+    const char* bytes, int length, int send_msg_size, int* sock_err) {
+    (void)fd;
+    (void)addr_dest;
+    (void)addr_from;
+    (void)dest_if;
+    (void)bytes;
+    (void)length;
+    (void)send_msg_size;
+    (void)sock_err;
+    sendmsg_call_count++;
+    return length > 0 ? length : 1;
+}
+
 static void test_slipstream_packet_loop_propagates_wakeup_error(void) {
     reset_mocks();
 
@@ -545,10 +602,43 @@ static void test_slipstream_packet_loop_catches_short_encode(void) {
     assert(cb_state.before_select_calls == 1);
 }
 
+static void test_slipstream_packet_loop_ignores_cached_slots_on_wakeup(void) {
+    reset_mocks();
+
+    select_impl = select_returns_payload_then_wakeup;
+    incoming_impl = incoming_returns_success;
+    prepare_packet_impl = prepare_packet_sets_length;
+    sendmsg_impl = sendmsg_counts_calls;
+
+    picoquic_packet_loop_param_t param = {0};
+    param.decode = decode_returns_payload_for_encode;
+    param.encode = encode_returns_full_segment;
+    param.is_client = 0;
+    param.do_not_use_gso = 1;
+
+    callback_state_t cb_state = {0};
+
+    picoquic_network_thread_ctx_t thread_ctx = {0};
+    thread_ctx.param = &param;
+    thread_ctx.loop_callback = mock_loop_callback;
+    thread_ctx.loop_callback_ctx = &cb_state;
+
+    picoquic_socket_ctx_t socket_ctx = {0};
+
+    int rc = slipstream_packet_loop_(&thread_ctx, &socket_ctx);
+    assert(rc == 0);
+    assert(thread_ctx.return_code == 0);
+    assert(sendmsg_call_count == 1);
+    assert(select_call_count == 2);
+    assert(cb_state.before_select_calls == 1);
+    assert(cb_state.wake_up_calls == 1);
+}
+
 int main(void) {
     test_slipstream_packet_loop_propagates_wakeup_error();
     test_slipstream_packet_loop_returns_decode_error();
     test_slipstream_packet_loop_incoming_error();
     test_slipstream_packet_loop_catches_short_encode();
+    test_slipstream_packet_loop_ignores_cached_slots_on_wakeup();
     return 0;
 }

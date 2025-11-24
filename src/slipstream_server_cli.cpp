@@ -11,18 +11,9 @@ std::string ServerArgs::help(const std::string& program_name) {
 
 const std::string ServerArgs::version = "slipstream-server 0.1";
 
-int main(int argc, char** argv) {
+static int run_server(int argc, char** argv) {
     int exit_code = 0;
     ServerArgs args(argc, argv);
-
-#ifdef _WINDOWS
-    WSADATA wsaData = { 0 };
-    int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (iResult != 0) {
-        fprintf(stderr, "WSAStartup failed: %d\n", iResult);
-        return 1;
-    }
-#endif
 
     // Ensure output buffers are flushed immediately
     setbuf(stdout, NULL);
@@ -58,9 +49,23 @@ int main(int argc, char** argv) {
         (char*)args.domain.c_str()
     );
 
+    return exit_code;
+}
+
+int main(int argc, char** argv) {
+#ifdef _WINDOWS
+    WSADATA wsaData = { 0 };
+    int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (iResult != 0) {
+        fprintf(stderr, "WSAStartup failed: %d\n", iResult);
+        return 1;
+    }
+#endif
+
+    int exit_code = run_server(argc, argv);
+
 #ifdef _WINDOWS
     WSACleanup();
 #endif
-
     return exit_code;
 }

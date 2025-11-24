@@ -56,9 +56,21 @@ static void test_slipstream_server_cc_observe_reports_state(void) {
     slipstream_server_cc_algorithm->alg_delete(&path);
 }
 
+static void test_slipstream_server_cc_observe_handles_null_state(void) {
+    picoquic_path_t path = {0};
+
+    uint64_t cc_state = 99;
+    uint64_t cc_param = 1234;
+    slipstream_server_cc_algorithm->alg_observe(&path, &cc_state, &cc_param);
+
+    assert(cc_state == 0);
+    assert(cc_param == UINT64_MAX);
+}
+
 int main(void) {
     test_slipstream_server_cc_init_and_delete();
     test_slipstream_server_cc_notify_updates_fields();
     test_slipstream_server_cc_observe_reports_state();
+    test_slipstream_server_cc_observe_handles_null_state();
     return 0;
 }
