@@ -169,7 +169,7 @@ ssize_t server_decode(void* slot_p, void* callback_ctx, unsigned char** dest_buf
     }
 
     // copy the subdomain from name to a new buffer
-    char data_buf[data_len];
+    char data_buf[data_len + 1];
     memcpy(data_buf, question->name, data_len);
     data_buf[data_len] = '\0';
     const size_t encoded_len = slipstream_inline_undotify(data_buf, data_len);
