@@ -9,7 +9,7 @@ struct ClientArgs : MainArguments<ClientArgs> {
     using MainArguments<ClientArgs>::MainArguments;
 
     int listen_port = option("tcp-listen-port", 'l', "Listen port (default: 5201)") = 5201;
-    std::vector<std::string> resolver = option("resolver", 'r', "Slipstream server resolver address (e.g., 1.1.1.1 or 8.8.8.8:53). Can be specified multiple times. (Required)");
+    std::vector<std::string> resolver = option("resolver", 'r', "Slipstream server resolver address (e.g., 1.1.1.1, 8.8.8.8:53, or [2001:db8::1]:53 for IPv6). Can be specified multiple times. (Required)");
     std::string congestion_control = option("congestion-control", 'c', "Congestion control algorithm (bbr, dcubic) (default: dcubic)") = "dcubic";
     bool gso = option('g', "GSO enabled (true/false) (default: false). Use --gso or --gso=true to enable.");
     std::string domain = option("domain", 'd', "Domain name used for the covert channel (Required)");
@@ -54,14 +54,38 @@ int main(int argc, char** argv) {
 
     // Process resolver addresses
     std::vector<st_address_t> resolver_addresses;
+    bool ipv4 = false;
+    bool ipv6 = false;
     for (const auto& res_str : args.resolver) {
         st_address_t addr;
         char server_name[256];
         int server_port = 53;
 
-        if (sscanf(res_str.c_str(), "%255[^:]:%d", server_name, &server_port) < 1) {
-            strncpy(server_name, res_str.c_str(), sizeof(server_name) - 1);
-            server_name[sizeof(server_name) - 1] = '\0';
+        if (res_str[0] == '[') {
+            const char* closing_bracket = strchr(res_str.c_str(), ']');
+            if (closing_bracket != NULL) {
+                size_t addr_len = closing_bracket - (res_str.c_str() + 1);
+                if (addr_len < sizeof(server_name)) {
+                    memcpy(server_name, res_str.c_str() + 1, addr_len);
+                    server_name[addr_len] = '\0';
+                    if (closing_bracket[1] == ':') {
+                        server_port = atoi(closing_bracket + 2);
+                    }
+                    ipv6 = true;
+                } else {
+                    std::cerr << "Invalid IPv6 address in resolver: " << res_str << std::endl;
+                    exit(1);
+                }
+            } else {
+                std::cerr << "Invalid IPv6 address format (missing closing bracket): " << res_str << std::endl;
+                exit(1);
+            }
+        } else {
+            if (sscanf(res_str.c_str(), "%255[^:]:%d", server_name, &server_port) < 1) {
+                strncpy(server_name, res_str.c_str(), sizeof(server_name) - 1);
+                server_name[sizeof(server_name) - 1] = '\0';
+                ipv4 = true;
+            }
         }
 
         if (server_port <= 0 || server_port > 65535) {
@@ -75,6 +99,12 @@ int main(int argc, char** argv) {
             exit(1);
         }
         resolver_addresses.push_back(addr);
+    }
+
+    if (ipv4 && ipv6) {
+        // due to single param.local_af in slipstream_client.c
+        std::cerr << "Cannot mix IPv4 and IPv6 resolver addresses" << std::endl;
+        exit(1);
     }
 
     exit_code = picoquic_slipstream_client(
