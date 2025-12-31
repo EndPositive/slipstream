@@ -394,6 +394,16 @@ void* slipstream_client_poller(void* arg) {
             break;
         }
         if (ret == 0) {
+            if (args->client_ctx->closed || should_shutdown) {
+                break;
+            }
+            args->cnx->is_poll_requested = 1;
+            args->stream_ctx->set_active = 1;
+            ret = picoquic_wake_up_network_thread(args->client_ctx->thread_ctx);
+            if (ret != 0) {
+                fprintf(stderr, "poll: could not wake up network thread, ret = %d\n", ret);
+                break;
+            }
             continue;
         }
 
