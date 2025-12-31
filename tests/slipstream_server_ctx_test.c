@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <string.h>
 #include <errno.h>
+#include <stdatomic.h>
 
 #include "picoquic_internal.h"
 #include "picoquic_packet_loop.h"
@@ -17,6 +18,8 @@ typedef struct st_slipstream_server_stream_ctx_t {
     int pipefd[2];
     uint64_t stream_id;
     volatile sig_atomic_t set_active;
+    atomic_uint async_refs;
+    atomic_bool closing;
 } slipstream_server_stream_ctx_t;
 
 typedef struct st_slipstream_server_ctx_t {
@@ -32,8 +35,7 @@ typedef struct st_slipstream_server_ctx_t {
 
 typedef struct st_slipstream_server_poller_args {
     int fd;
-    picoquic_cnx_t* cnx;
-    slipstream_server_ctx_t* server_ctx;
+    picoquic_network_thread_ctx_t* thread_ctx;
     slipstream_server_stream_ctx_t* stream_ctx;
 } slipstream_server_poller_args;
 
@@ -41,6 +43,8 @@ slipstream_server_stream_ctx_t* slipstream_server_create_stream_ctx(slipstream_s
 void slipstream_server_mark_active_pass(slipstream_server_ctx_t* server_ctx);
 void test_slipstream_server_free_stream_context(slipstream_server_ctx_t* server_ctx, slipstream_server_stream_ctx_t* stream_ctx);
 void test_slipstream_server_free_context(slipstream_server_ctx_t* server_ctx);
+bool test_slipstream_server_stream_ctx_acquire(slipstream_server_stream_ctx_t* stream_ctx);
+void test_slipstream_server_stream_ctx_release(slipstream_server_stream_ctx_t* stream_ctx);
 
 extern void reset_server_ctx_test_state(void);
 extern bool test_pipe_fail;
@@ -99,6 +103,9 @@ extern void* test_picoquic_provide_stream_data_buffer_last_ctx;
 extern uint8_t test_picoquic_provide_stream_data_buffer_storage[512];
 extern void* test_pthread_last_arg;
 extern bool test_skip_arg_free_on_success;
+extern void* test_poison_ptr;
+extern size_t test_poison_size;
+extern bool test_poison_hit;
 
 int slipstream_server_callback(picoquic_cnx_t* cnx,
     uint64_t stream_id, uint8_t* bytes, size_t length,
@@ -256,6 +263,28 @@ static void test_free_context_releases_all_streams(void) {
     assert(test_closed_fds[1] == first_fd);
 }
 
+static void test_free_stream_ctx_defers_until_async_release(void) {
+    reset_server_ctx_test_state();
+
+    slipstream_server_ctx_t server_ctx = {0};
+    server_ctx.cnx = &mock_cnx;
+
+    slipstream_server_stream_ctx_t* stream_ctx = slipstream_server_create_stream_ctx(&server_ctx, 1500);
+    assert(stream_ctx != NULL);
+
+    assert(test_slipstream_server_stream_ctx_acquire(stream_ctx));
+
+    test_poison_ptr = stream_ctx;
+    test_poison_size = sizeof(*stream_ctx);
+    test_poison_hit = false;
+
+    test_slipstream_server_free_stream_context(&server_ctx, stream_ctx);
+    assert(test_poison_hit == false);
+
+    test_slipstream_server_stream_ctx_release(stream_ctx);
+    assert(test_poison_hit == true);
+}
+
 static void test_callback_stream_reset_cleans_stream(void) {
     reset_server_ctx_test_state();
 
@@ -328,10 +357,14 @@ static void test_callback_close_releases_context(void) {
     cnx.quic = &test_quic_ctx;
 
     test_default_callback_ctx = &default_ctx;
+    test_poison_ptr = server_ctx;
+    test_poison_size = sizeof(*server_ctx);
+    test_poison_hit = false;
 
     int rc = slipstream_server_callback(&cnx, 91, NULL, 0, picoquic_callback_close, server_ctx, stream_ctx);
     assert(rc == 0);
 
+    assert(test_poison_hit == true);
     assert(test_picoquic_set_callback_calls == 1);
     assert(test_picoquic_last_callback_ctx == NULL);
     assert(test_picoquic_close_calls == 1);
@@ -573,9 +606,10 @@ static void test_callback_prepare_to_send_eagain_triggers_poller(void) {
     assert(test_pthread_last_arg != NULL);
     slipstream_server_poller_args* args = (slipstream_server_poller_args*)test_pthread_last_arg;
     assert(args->fd == stream_ctx->fd);
-    assert(args->server_ctx == &server_ctx);
+    assert(args->thread_ctx == &thread_ctx);
     assert(args->stream_ctx == stream_ctx);
 
+    test_slipstream_server_stream_ctx_release(args->stream_ctx);
     free(test_pthread_last_arg);
     test_pthread_last_arg = NULL;
     test_skip_arg_free_on_success = false;
@@ -695,6 +729,7 @@ int main(void) {
     test_mark_active_pass_triggers_callbacks();
     test_free_stream_ctx_unlinks_middle();
     test_free_context_releases_all_streams();
+    test_free_stream_ctx_defers_until_async_release();
     test_callback_stream_reset_cleans_stream();
     test_callback_stop_sending_triggers_double_reset();
     test_callback_close_releases_context();

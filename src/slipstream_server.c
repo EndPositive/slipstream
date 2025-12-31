@@ -13,6 +13,7 @@
 #include <sys/param.h>
 #include <sys/poll.h>
 #include <assert.h>
+#include <stdatomic.h>
 #include <picoquic_internal.h>
 #include <slipstream_sockloop.h>
 
@@ -198,6 +199,8 @@ typedef struct st_slipstream_server_stream_ctx_t {
     int pipefd[2];
     uint64_t stream_id;
     volatile sig_atomic_t set_active;
+    atomic_uint async_refs;
+    atomic_bool closing;
 } slipstream_server_stream_ctx_t;
 
 typedef struct st_slipstream_server_ctx_t {
@@ -221,6 +224,8 @@ slipstream_server_stream_ctx_t* slipstream_server_create_stream_ctx(slipstream_s
     }
 
     memset(stream_ctx, 0, sizeof(slipstream_server_stream_ctx_t));
+    atomic_init(&stream_ctx->async_refs, 0);
+    atomic_init(&stream_ctx->closing, false);
     stream_ctx->stream_id = stream_id;
 
     if (pipe(stream_ctx->pipefd) < 0) {
@@ -250,8 +255,29 @@ slipstream_server_stream_ctx_t* slipstream_server_create_stream_ctx(slipstream_s
     return stream_ctx;
 }
 
+static bool slipstream_server_stream_ctx_acquire(slipstream_server_stream_ctx_t* stream_ctx) {
+    if (stream_ctx == NULL || atomic_load(&stream_ctx->closing)) {
+        return false;
+    }
+    atomic_fetch_add(&stream_ctx->async_refs, 1);
+    return true;
+}
+
+static void slipstream_server_stream_ctx_release(slipstream_server_stream_ctx_t* stream_ctx) {
+    if (stream_ctx == NULL) {
+        return;
+    }
+    unsigned int remaining = atomic_fetch_sub(&stream_ctx->async_refs, 1) - 1;
+    if (remaining == 0 && atomic_load(&stream_ctx->closing)) {
+        free(stream_ctx);
+    }
+}
+
 static void slipstream_server_free_stream_context(slipstream_server_ctx_t* server_ctx,
                                              slipstream_server_stream_ctx_t* stream_ctx) {
+    if (stream_ctx == NULL) {
+        return;
+    }
     if (stream_ctx->previous_stream != NULL) {
         stream_ctx->previous_stream->next_stream = stream_ctx->next_stream;
     }
@@ -262,9 +288,15 @@ static void slipstream_server_free_stream_context(slipstream_server_ctx_t* serve
         server_ctx->first_stream = stream_ctx->next_stream;
     }
 
-    stream_ctx->fd = close(stream_ctx->fd);
+    if (stream_ctx->fd >= 0) {
+        close(stream_ctx->fd);
+        stream_ctx->fd = -1;
+    }
 
-    free(stream_ctx);
+    atomic_store(&stream_ctx->closing, true);
+    if (atomic_load(&stream_ctx->async_refs) == 0) {
+        free(stream_ctx);
+    }
 }
 
 static void slipstream_server_free_context(slipstream_server_ctx_t* server_ctx) {
@@ -396,13 +428,13 @@ int slipstream_server_sockloop_callback(picoquic_quic_t* quic, picoquic_packet_l
 
 typedef struct st_slipstream_server_poller_args {
     int fd;
-    picoquic_cnx_t* cnx;
-    slipstream_server_ctx_t* server_ctx;
+    picoquic_network_thread_ctx_t* thread_ctx;
     slipstream_server_stream_ctx_t* stream_ctx;
 } slipstream_server_poller_args;
 
 void* slipstream_server_poller(void* arg) {
     slipstream_server_poller_args* args = arg;
+    slipstream_server_stream_ctx_t* stream_ctx = args->stream_ctx;
 
     while (1) {
         struct pollfd fds;
@@ -420,18 +452,21 @@ void* slipstream_server_poller(void* arg) {
             continue;
         }
 
-        args->stream_ctx->set_active = 1;
-
-        ret = picoquic_wake_up_network_thread(args->server_ctx->thread_ctx);
-        if (ret != 0) {
-            DBG_PRINTF("poll: could not wake up network thread, ret = %d", ret);
+        if (stream_ctx != NULL && !atomic_load(&stream_ctx->closing)) {
+            stream_ctx->set_active = 1;
+            if (args->thread_ctx != NULL) {
+                ret = picoquic_wake_up_network_thread(args->thread_ctx);
+                if (ret != 0) {
+                    DBG_PRINTF("poll: could not wake up network thread, ret = %d", ret);
+                }
+            }
+            DBG_PRINTF("[stream_id=%d][fd=%d] wakeup", stream_ctx->stream_id, args->fd);
         }
-        DBG_PRINTF("[stream_id=%d][fd=%d] wakeup", args->stream_ctx->stream_id, args->fd);
 
         break;
     }
 
-
+    slipstream_server_stream_ctx_release(stream_ctx);
     free(args);
     pthread_exit(NULL);
 }
@@ -439,8 +474,8 @@ void* slipstream_server_poller(void* arg) {
 typedef struct st_slipstream_io_copy_args {
     int pipe;
     int socket;
-    picoquic_cnx_t* cnx;
-    slipstream_server_ctx_t* server_ctx;
+    struct sockaddr_storage upstream_addr;
+    picoquic_network_thread_ctx_t* thread_ctx;
     slipstream_server_stream_ctx_t* stream_ctx;
 } slipstream_io_copy_args;
 
@@ -449,35 +484,36 @@ void* slipstream_io_copy(void* arg) {
     slipstream_io_copy_args* args = arg;
     int pipe = args->pipe;
     int socket = args->socket;
-    slipstream_server_ctx_t* server_ctx = args->server_ctx;
     slipstream_server_stream_ctx_t* stream_ctx = args->stream_ctx;
 
     socklen_t addr_len;
-    if (server_ctx->upstream_addr.ss_family == AF_INET) {
+    if (args->upstream_addr.ss_family == AF_INET) {
         addr_len = sizeof(struct sockaddr_in);
-    } else if (server_ctx->upstream_addr.ss_family == AF_INET6) {
+    } else if (args->upstream_addr.ss_family == AF_INET6) {
         addr_len = sizeof(struct sockaddr_in6);
     } else {
         perror("Invalid address family");
-        return NULL;
+        goto cleanup;
     }
 
-    if (connect(socket, (struct sockaddr*)&server_ctx->upstream_addr, addr_len) < 0) {
+    if (connect(socket, (struct sockaddr*)&args->upstream_addr, addr_len) < 0) {
         perror("connect() failed");
-        return NULL;
+        goto cleanup;
     }
 
     DBG_PRINTF("[%lu:%d] setup pipe done", stream_ctx->stream_id, stream_ctx->fd);
 
-    stream_ctx->set_active = 1;
-
-    args->stream_ctx->set_active = 1;
-
-    int ret = picoquic_wake_up_network_thread(args->server_ctx->thread_ctx);
-    if (ret != 0) {
-        DBG_PRINTF("poll: could not wake up network thread, ret = %d", ret);
+    if (!atomic_load(&stream_ctx->closing)) {
+        stream_ctx->set_active = 1;
     }
-    DBG_PRINTF("[stream_id=%d][fd=%d] wakeup", args->stream_ctx->stream_id, args->socket);
+
+    if (args->thread_ctx != NULL) {
+        int ret = picoquic_wake_up_network_thread(args->thread_ctx);
+        if (ret != 0) {
+            DBG_PRINTF("poll: could not wake up network thread, ret = %d", ret);
+        }
+    }
+    DBG_PRINTF("[stream_id=%d][fd=%d] wakeup", stream_ctx->stream_id, args->socket);
 
     while (1) {
         ssize_t bytes_read = read(pipe, buffer, sizeof(buffer));
@@ -485,7 +521,7 @@ void* slipstream_io_copy(void* arg) {
         DBG_PRINTF("[%lu:%d] read %d bytes", stream_ctx->stream_id, stream_ctx->fd, bytes_read);
         if (bytes_read < 0) {
             perror("recv failed");
-            return NULL;
+            goto cleanup;
         } else if (bytes_read == 0) {
             // End of stream - source socket closed connection
             break;
@@ -498,13 +534,16 @@ void* slipstream_io_copy(void* arg) {
             ssize_t bytes_written = send(socket, p, remaining, 0);
             if (bytes_written < 0) {
                 perror("send failed");
-                return NULL;
+                goto cleanup;
             }
             remaining -= bytes_written;
             p += bytes_written;
         }
     }
 
+cleanup:
+    slipstream_server_stream_ctx_release(stream_ctx);
+    free(args);
     return NULL;
 }
 
@@ -563,23 +602,33 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
             DBG_PRINTF("[%lu:%d] setup pipe", stream_id, stream_ctx->pipefd[1]);
 
             slipstream_io_copy_args* args = malloc(sizeof(slipstream_io_copy_args));
+            if (args == NULL) {
+                perror("malloc() failed for io_copy args");
+                return 0;
+            }
+            if (!slipstream_server_stream_ctx_acquire(stream_ctx)) {
+                free(args);
+                return 0;
+            }
             args->pipe = stream_ctx->pipefd[0];
             args->socket = stream_ctx->fd;
-            args->cnx = cnx;
-            args->server_ctx = server_ctx;
             args->stream_ctx = stream_ctx;
+            args->thread_ctx = server_ctx->thread_ctx;
+            memcpy(&args->upstream_addr, &server_ctx->upstream_addr, sizeof(args->upstream_addr));
 
             pthread_t thread;
             if (pthread_create(&thread, NULL, slipstream_io_copy, args) != 0) {
                 perror("pthread_create() failed for thread1");
+                slipstream_server_stream_ctx_release(stream_ctx);
                 free(args);
-            }
+            } else {
 #ifdef __APPLE__
-            pthread_setname_np("slipstream_io_copy");
+                pthread_setname_np("slipstream_io_copy");
 #else
-            pthread_setname_np(thread, "slipstream_io_copy");
+                pthread_setname_np(thread, "slipstream_io_copy");
 #endif
-            pthread_detach(thread);
+                pthread_detach(thread);
+            }
 
         }
 
@@ -635,13 +684,17 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
     case picoquic_callback_close: /* Received connection close */
     case picoquic_callback_application_close: /* Received application close */
         DBG_PRINTF("Connection closed.", NULL);
+        picoquic_network_thread_ctx_t* thread_ctx = NULL;
         if (server_ctx != NULL) {
+            thread_ctx = server_ctx->thread_ctx;
             slipstream_server_free_context(server_ctx);
         }
         /* Remove the application callback */
         picoquic_set_callback(cnx, NULL, NULL);
         picoquic_close(cnx, 0);
-        picoquic_wake_up_network_thread(server_ctx->thread_ctx);
+        if (thread_ctx != NULL) {
+            picoquic_wake_up_network_thread(thread_ctx);
+        }
         break;
     case picoquic_callback_prepare_to_send:
         /* Active sending API */
@@ -672,22 +725,27 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
                     DBG_PRINTF("[stream_id=%d] recv->quic_send: empty, disactivate", stream_ctx->stream_id);
 
                     slipstream_server_poller_args* args = malloc(sizeof(slipstream_server_poller_args));
-                    args->fd = stream_ctx->fd;
-                    args->cnx = cnx;
-                    args->server_ctx = server_ctx;
-                    args->stream_ctx = stream_ctx;
+                    if (args != NULL && slipstream_server_stream_ctx_acquire(stream_ctx)) {
+                        args->fd = stream_ctx->fd;
+                        args->thread_ctx = server_ctx->thread_ctx;
+                        args->stream_ctx = stream_ctx;
 
-                    pthread_t thread;
-                    if (pthread_create(&thread, NULL, slipstream_server_poller, args) != 0) {
-                        perror("pthread_create() failed for thread1");
+                        pthread_t thread;
+                        if (pthread_create(&thread, NULL, slipstream_server_poller, args) != 0) {
+                            perror("pthread_create() failed for thread1");
+                            slipstream_server_stream_ctx_release(stream_ctx);
+                            free(args);
+                        } else {
+#ifdef __APPLE__
+                            pthread_setname_np("slipstream_server_poller");
+#else
+                            pthread_setname_np(thread, "slipstream_server_poller");
+#endif
+                            pthread_detach(thread);
+                        }
+                    } else {
                         free(args);
                     }
-#ifdef __APPLE__
-                    pthread_setname_np("slipstream_server_poller");
-#else
-                    pthread_setname_np(thread, "slipstream_server_poller");
-#endif
-                    pthread_detach(thread);
                 }
                 if (bytes_read == 0) {
                     DBG_PRINTF("[stream_id=%d] recv: closed stream", stream_ctx->stream_id);

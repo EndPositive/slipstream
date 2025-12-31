@@ -86,6 +86,9 @@ int test_picoquic_provide_stream_data_buffer_last_fin = 0;
 int test_picoquic_provide_stream_data_buffer_last_active = 0;
 void* test_picoquic_provide_stream_data_buffer_last_ctx = NULL;
 uint8_t test_picoquic_provide_stream_data_buffer_storage[512] = {0};
+void* test_poison_ptr = NULL;
+size_t test_poison_size = 0;
+bool test_poison_hit = false;
 
 void reset_server_ctx_test_state(void) {
     next_fd_seed = 100;
@@ -138,6 +141,9 @@ void reset_server_ctx_test_state(void) {
     test_picoquic_provide_stream_data_buffer_last_fin = 0;
     test_picoquic_provide_stream_data_buffer_last_active = 0;
     test_picoquic_provide_stream_data_buffer_last_ctx = NULL;
+    test_poison_ptr = NULL;
+    test_poison_size = 0;
+    test_poison_hit = false;
     for (size_t i = 0; i < sizeof(test_write_buffer); ++i) {
         test_write_buffer[i] = 0;
     }
@@ -187,6 +193,14 @@ int test_close(int fd) {
     return 0;
 }
 
+void test_free(void* ptr) {
+    if (ptr == test_poison_ptr && test_poison_size > 0) {
+        memset(ptr, 0xA5, test_poison_size);
+        test_poison_hit = true;
+    }
+    free(ptr);
+}
+
 int test_picoquic_mark_active_stream(picoquic_cnx_t* cnx, uint64_t stream_id, int is_unidir, void* ctx) {
     (void)cnx;
     (void)is_unidir;
@@ -213,6 +227,7 @@ int test_picoquic_mark_active_stream(picoquic_cnx_t* cnx, uint64_t stream_id, in
 #define recv test_recv
 #define ioctl test_ioctl
 #define close test_close
+#define free test_free
 #define picoquic_mark_active_stream test_picoquic_mark_active_stream
 #define should_shutdown slipstream_server_should_shutdown
 #define pthread_create test_pthread_create
@@ -400,4 +415,12 @@ void test_slipstream_server_free_stream_context(slipstream_server_ctx_t* server_
 
 void test_slipstream_server_free_context(slipstream_server_ctx_t* server_ctx) {
     slipstream_server_free_context(server_ctx);
+}
+
+bool test_slipstream_server_stream_ctx_acquire(slipstream_server_stream_ctx_t* stream_ctx) {
+    return slipstream_server_stream_ctx_acquire(stream_ctx);
+}
+
+void test_slipstream_server_stream_ctx_release(slipstream_server_stream_ctx_t* stream_ctx) {
+    slipstream_server_stream_ctx_release(stream_ctx);
 }
