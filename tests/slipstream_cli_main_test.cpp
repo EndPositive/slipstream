@@ -15,6 +15,7 @@ static int client_return_code = 0;
 static int server_return_code = 0;
 static int client_call_count = 0;
 static int server_call_count = 0;
+static bool recorded_listen_ipv6 = false;
 
 extern "C" void debug_printf(const char* fmt, ...) {
     (void)fmt;
@@ -52,7 +53,7 @@ extern "C" int test_picoquic_slipstream_client(int listen_port, struct st_addres
 extern "C" int test_picoquic_slipstream_server(int server_port, bool listen_ipv6, const char* pem_cert, const char* pem_key,
     struct sockaddr_storage* target_address, const char* domain_name) {
     (void)server_port;
-    (void)listen_ipv6;
+    recorded_listen_ipv6 = listen_ipv6;
     (void)pem_cert;
     (void)pem_key;
     (void)target_address;
@@ -84,6 +85,7 @@ static void reset_cli_state(void) {
     server_return_code = 0;
     client_call_count = 0;
     server_call_count = 0;
+    recorded_listen_ipv6 = false;
 }
 
 static void client_cli_success_parses_resolvers(void) {
@@ -287,6 +289,24 @@ static void server_cli_rejects_malformed_target(void) {
     assert(server_call_count == 0);
 }
 
+static void server_cli_enables_listen_ipv6(void) {
+    reset_cli_state();
+    server_return_code = 17;
+
+    const char* argv_raw[] = {
+        "slipstream-server",
+        "--domain", "example.com",
+        "--dns-listen-ipv6"
+    };
+    int argc = sizeof(argv_raw) / sizeof(argv_raw[0]);
+    char** argv = const_cast<char**>(argv_raw);
+
+    int rc = slipstream_server_cli_main(argc, argv);
+    assert(rc == server_return_code);
+    assert(server_call_count == 1);
+    assert(recorded_listen_ipv6);
+}
+
 int main() {
     client_cli_success_parses_resolvers();
     client_cli_rejects_bad_resolver();
@@ -299,5 +319,6 @@ int main() {
     server_cli_handles_resolve_failure();
     server_cli_uses_default_target();
     server_cli_rejects_malformed_target();
+    server_cli_enables_listen_ipv6();
     return 0;
 }
