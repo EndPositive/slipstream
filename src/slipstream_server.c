@@ -370,6 +370,11 @@ void* slipstream_server_poller(void* arg) {
             continue;
         }
 
+        if (fds.revents & POLLNVAL) {
+            printf("File descriptor %d was closed\n", fds.fd);
+            break;
+        }
+
         args->stream_ctx->set_active = 1;
 
         ret = picoquic_wake_up_network_thread(args->server_ctx->thread_ctx);
