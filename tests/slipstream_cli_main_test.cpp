@@ -49,9 +49,10 @@ extern "C" int test_picoquic_slipstream_client(int listen_port, struct st_addres
     return client_return_code;
 }
 
-extern "C" int test_picoquic_slipstream_server(int server_port, const char* pem_cert, const char* pem_key,
+extern "C" int test_picoquic_slipstream_server(int server_port, bool listen_ipv6, const char* pem_cert, const char* pem_key,
     struct sockaddr_storage* target_address, const char* domain_name) {
     (void)server_port;
+    (void)listen_ipv6;
     (void)pem_cert;
     (void)pem_key;
     (void)target_address;

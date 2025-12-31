@@ -302,7 +302,7 @@ typedef struct {
 static void* slipstream_server_main(void* arg) {
     server_thread_args_t* args = (server_thread_args_t*)arg;
     slipstream_server_should_shutdown = 0;
-    int ret = picoquic_slipstream_server((int)args->server_port, k_cert_path, k_key_path,
+    int ret = picoquic_slipstream_server((int)args->server_port, false, k_cert_path, k_key_path,
         &args->target_addr, k_test_domain);
     args->result = ret;
     debug_log("[server] thread exiting with result %d", ret);
