@@ -452,6 +452,11 @@ void* slipstream_server_poller(void* arg) {
             continue;
         }
 
+        if (fds.revents & POLLNVAL) {
+            printf("File descriptor %d was closed\n", fds.fd);
+            break;
+        }
+
         if (stream_ctx != NULL && !atomic_load(&stream_ctx->closing)) {
             stream_ctx->set_active = 1;
             if (args->thread_ctx != NULL) {
