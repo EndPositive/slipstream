@@ -116,19 +116,46 @@ static ssize_t blocking_recv(int fd, char* buf, size_t len, size_t* recv_total) 
     return recvd;
 }
 
+static void close_if_valid(int fd) {
+    if (fd >= 0) {
+        close(fd);
+    }
+}
+
+static void* target_server_finish(target_server_state_t* state, int listen_fd, int client_fd, size_t completed) {
+    close_if_valid(client_fd);
+    close_if_valid(listen_fd);
+
+    pthread_mutex_lock(&state->mutex);
+    state->completed = completed;
+    state->ready = true;
+    state->done = true;
+    pthread_cond_broadcast(&state->cond);
+    pthread_mutex_unlock(&state->mutex);
+
+    if (state->result != 0) {
+        debug_log("[target] exiting with result %d after %zu exchanges", state->result, completed);
+    } else {
+        debug_log("[target] completed %zu exchanges successfully", completed);
+    }
+    return NULL;
+}
+
+static void* target_server_fail(target_server_state_t* state, int listen_fd, int client_fd, size_t completed, int result) {
+    state->result = result;
+    return target_server_finish(state, listen_fd, client_fd, completed);
+}
+
 static void* target_server_main(void* arg) {
     target_server_state_t* state = (target_server_state_t*)arg;
     debug_log("[target] thread started");
 
-    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int listen_fd = -1;
+    int client_fd = -1;
+
+    listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
-        pthread_mutex_lock(&state->mutex);
-        state->result = -errno;
-        state->ready = true;
-        state->done = true;
-        pthread_cond_broadcast(&state->cond);
-        pthread_mutex_unlock(&state->mutex);
-        return NULL;
+        return target_server_fail(state, listen_fd, client_fd, 0, -errno);
     }
 
     int reuse = 1;
@@ -140,37 +167,16 @@ static void* target_server_main(void* arg) {
     addr.sin_port = 0;
 
     if (bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-        pthread_mutex_lock(&state->mutex);
-        state->result = -errno;
-        state->ready = true;
-        state->done = true;
-        pthread_cond_broadcast(&state->cond);
-        pthread_mutex_unlock(&state->mutex);
-        close(listen_fd);
-        return NULL;
+        return target_server_fail(state, listen_fd, client_fd, 0, -errno);
     }
 
     if (listen(listen_fd, 1) != 0) {
-        pthread_mutex_lock(&state->mutex);
-        state->result = -errno;
-        state->ready = true;
-        state->done = true;
-        pthread_cond_broadcast(&state->cond);
-        pthread_mutex_unlock(&state->mutex);
-        close(listen_fd);
-        return NULL;
+        return target_server_fail(state, listen_fd, client_fd, 0, -errno);
     }
 
     socklen_t addr_len = sizeof(addr);
     if (getsockname(listen_fd, (struct sockaddr*)&addr, &addr_len) != 0) {
-        pthread_mutex_lock(&state->mutex);
-        state->result = -errno;
-        state->ready = true;
-        state->done = true;
-        pthread_cond_broadcast(&state->cond);
-        pthread_mutex_unlock(&state->mutex);
-        close(listen_fd);
-        return NULL;
+        return target_server_fail(state, listen_fd, client_fd, 0, -errno);
     }
 
     pthread_mutex_lock(&state->mutex);
@@ -180,15 +186,9 @@ static void* target_server_main(void* arg) {
     pthread_mutex_unlock(&state->mutex);
     debug_log("[target] listening on %u", state->port);
 
-    int client_fd = accept(listen_fd, NULL, NULL);
+    client_fd = accept(listen_fd, NULL, NULL);
     if (client_fd < 0) {
-        pthread_mutex_lock(&state->mutex);
-        state->result = -errno;
-        state->done = true;
-        pthread_cond_broadcast(&state->cond);
-        pthread_mutex_unlock(&state->mutex);
-        close(listen_fd);
-        return NULL;
+        return target_server_fail(state, listen_fd, client_fd, 0, -errno);
     }
 
     struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
@@ -203,8 +203,7 @@ static void* target_server_main(void* arg) {
         const char* expected = state->expected_requests[i];
         size_t expected_len = strlen(expected);
         if (expected_len > sizeof(exchange_buffer)) {
-            state->result = -EOVERFLOW;
-            break;
+            return target_server_fail(state, listen_fd, client_fd, completed, -EOVERFLOW);
         }
 
         memset(exchange_buffer, 0, sizeof(exchange_buffer));
@@ -214,8 +213,7 @@ static void* target_server_main(void* arg) {
         while (received_total < expected_len) {
             ssize_t recvd = blocking_recv(client_fd, exchange_buffer, expected_len, &received_total);
             if (recvd == 0) {
-                state->result = -ECONNRESET;
-                goto cleanup;
+                return target_server_fail(state, listen_fd, client_fd, completed, -ECONNRESET);
             }
             if (recvd < 0) {
                 int err = errno;
@@ -224,21 +222,18 @@ static void* target_server_main(void* arg) {
                 }
                 if (is_wouldblock(err)) {
                     if (++recv_timeouts > max_timeouts) {
-                        state->result = -ETIMEDOUT;
-                        goto cleanup;
+                        return target_server_fail(state, listen_fd, client_fd, completed, -ETIMEDOUT);
                     }
                     continue;
                 }
-                state->result = -err;
-                goto cleanup;
+                return target_server_fail(state, listen_fd, client_fd, completed, -err);
             }
             recv_timeouts = 0;
             debug_log("[target] received %zd bytes (%zu/%zu) for request %zu", recvd, received_total, expected_len, i);
         }
 
         if (memcmp(exchange_buffer, expected, expected_len) != 0) {
-            state->result = -EINVAL;
-            break;
+            return target_server_fail(state, listen_fd, client_fd, completed, -EINVAL);
         }
         debug_log("[target] verified request %zu '%s'", i, expected);
 
@@ -256,13 +251,11 @@ static void* target_server_main(void* arg) {
                 }
                 if (is_wouldblock(err)) {
                     if (++send_timeouts > max_timeouts) {
-                        state->result = -ETIMEDOUT;
-                        goto cleanup;
+                        return target_server_fail(state, listen_fd, client_fd, completed, -ETIMEDOUT);
                     }
                     continue;
                 }
-                state->result = -err;
-                goto cleanup;
+                return target_server_fail(state, listen_fd, client_fd, completed, -err);
             }
             debug_log("[target] sent %zd bytes (%zu/%zu) for response %zu", sent, sent_total, response_len, i);
         }
@@ -270,21 +263,7 @@ static void* target_server_main(void* arg) {
         completed = i + 1;
     }
 
-cleanup:
-    close(client_fd);
-    close(listen_fd);
-
-    pthread_mutex_lock(&state->mutex);
-    state->completed = completed;
-    state->done = true;
-    pthread_cond_broadcast(&state->cond);
-    pthread_mutex_unlock(&state->mutex);
-    if (state->result != 0) {
-        debug_log("[target] exiting with result %d after %zu exchanges", state->result, completed);
-    } else {
-        debug_log("[target] completed %zu exchanges successfully", completed);
-    }
-    return NULL;
+    return target_server_finish(state, listen_fd, client_fd, completed);
 }
 
 typedef struct {

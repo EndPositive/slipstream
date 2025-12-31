@@ -479,26 +479,25 @@ typedef struct st_slipstream_io_copy_args {
     slipstream_server_stream_ctx_t* stream_ctx;
 } slipstream_io_copy_args;
 
-void* slipstream_io_copy(void* arg) {
+static int slipstream_io_copy_run(slipstream_io_copy_args* args) {
     char buffer[1024];
-    slipstream_io_copy_args* args = arg;
     int pipe = args->pipe;
     int socket = args->socket;
     slipstream_server_stream_ctx_t* stream_ctx = args->stream_ctx;
 
-    socklen_t addr_len;
+    socklen_t addr_len = 0;
     if (args->upstream_addr.ss_family == AF_INET) {
         addr_len = sizeof(struct sockaddr_in);
     } else if (args->upstream_addr.ss_family == AF_INET6) {
         addr_len = sizeof(struct sockaddr_in6);
     } else {
         perror("Invalid address family");
-        goto cleanup;
+        return -1;
     }
 
     if (connect(socket, (struct sockaddr*)&args->upstream_addr, addr_len) < 0) {
         perror("connect() failed");
-        goto cleanup;
+        return -1;
     }
 
     DBG_PRINTF("[%lu:%d] setup pipe done", stream_ctx->stream_id, stream_ctx->fd);
@@ -521,7 +520,7 @@ void* slipstream_io_copy(void* arg) {
         DBG_PRINTF("[%lu:%d] read %d bytes", stream_ctx->stream_id, stream_ctx->fd, bytes_read);
         if (bytes_read < 0) {
             perror("recv failed");
-            goto cleanup;
+            return -1;
         } else if (bytes_read == 0) {
             // End of stream - source socket closed connection
             break;
@@ -534,15 +533,20 @@ void* slipstream_io_copy(void* arg) {
             ssize_t bytes_written = send(socket, p, remaining, 0);
             if (bytes_written < 0) {
                 perror("send failed");
-                goto cleanup;
+                return -1;
             }
             remaining -= bytes_written;
             p += bytes_written;
         }
     }
 
-cleanup:
-    slipstream_server_stream_ctx_release(stream_ctx);
+    return 0;
+}
+
+void* slipstream_io_copy(void* arg) {
+    slipstream_io_copy_args* args = arg;
+    (void)slipstream_io_copy_run(args);
+    slipstream_server_stream_ctx_release(args->stream_ctx);
     free(args);
     return NULL;
 }
