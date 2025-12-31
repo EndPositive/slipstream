@@ -798,7 +798,7 @@ int picoquic_slipstream_client(int listen_port, struct st_address_t* server_addr
     printf("Listening on port %d...\n", listen_port);
 
     picoquic_packet_loop_param_t param = {0};
-    param.local_af = AF_INET;
+    param.local_af = client_ctx.server_addresses[0].server_address.ss_family;
 
     // For loopback testing, we need to disable hardware GSO since packets on loopback never reach a hardware NIC
     // $ ethtool -K lo tx-udp-segmentation off

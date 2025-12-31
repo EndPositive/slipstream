@@ -172,7 +172,7 @@ ssize_t server_decode(void* slot_p, void* callback_ctx, unsigned char** dest_buf
     }
 
     // copy the subdomain from name to a new buffer
-    char data_buf[data_len];
+    char data_buf[data_len + 1];
     memcpy(data_buf, question->name, data_len);
     data_buf[data_len] = '\0';
     const size_t encoded_len = slipstream_inline_undotify(data_buf, data_len);
@@ -452,7 +452,17 @@ void* slipstream_io_copy(void* arg) {
     slipstream_server_ctx_t* server_ctx = args->server_ctx;
     slipstream_server_stream_ctx_t* stream_ctx = args->stream_ctx;
 
-    if (connect(socket, (struct sockaddr*)&server_ctx->upstream_addr, sizeof(server_ctx->upstream_addr)) < 0) {
+    socklen_t addr_len;
+    if (server_ctx->upstream_addr.ss_family == AF_INET) {
+        addr_len = sizeof(struct sockaddr_in);
+    } else if (server_ctx->upstream_addr.ss_family == AF_INET6) {
+        addr_len = sizeof(struct sockaddr_in6);
+    } else {
+        perror("Invalid address family");
+        return NULL;
+    }
+
+    if (connect(socket, (struct sockaddr*)&server_ctx->upstream_addr, addr_len) < 0) {
         perror("connect() failed");
         return NULL;
     }
@@ -727,7 +737,7 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
     return ret;
 }
 
-int picoquic_slipstream_server(int server_port, const char* server_cert, const char* server_key,
+int picoquic_slipstream_server(int server_port, bool listen_ipv6, const char* server_cert, const char* server_key,
                                struct sockaddr_storage* target_address, const char* domain_name) {
     /* Start: start the QUIC process with cert and key files */
     int ret = 0;
@@ -787,7 +797,11 @@ int picoquic_slipstream_server(int server_port, const char* server_cert, const c
     picoquic_set_default_congestion_algorithm(quic, slipstream_server_cc_algorithm);
 
     picoquic_packet_loop_param_t param = {0};
-    param.local_af = AF_INET;
+    if (listen_ipv6) {
+        param.local_af = AF_INET6;
+    } else {
+        param.local_af = AF_INET;
+    }
     param.local_port = server_port;
     param.do_not_use_gso = 1; // can't use GSO since we're limited to responding to one DNS query at a time
     param.is_client = 0;

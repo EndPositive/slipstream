@@ -31,6 +31,8 @@ static int run_client(int argc, char** argv) {
 
     // Process resolver addresses
     std::vector<st_address_t> resolver_addresses;
+    bool ipv4 = false;
+    bool ipv6 = false;
     for (const auto& res_str : args.resolver) {
         st_address_t addr = {};
         char server_name[256];
@@ -46,8 +48,22 @@ static int run_client(int argc, char** argv) {
             std::cerr << "Cannot resolve resolver address '" << server_name << "' port " << server_port << std::endl;
             return 1;
         }
+        if (addr.server_address.ss_family == AF_INET) {
+            ipv4 = true;
+        } else if (addr.server_address.ss_family == AF_INET6) {
+            ipv6 = true;
+        } else {
+            std::cerr << "Unsupported address family for resolver: " << res_str << std::endl;
+            return 1;
+        }
         addr.added = false;
         resolver_addresses.push_back(addr);
+    }
+
+    if (ipv4 && ipv6) {
+        // due to single param.local_af in slipstream_client.c
+        std::cerr << "Cannot mix IPv4 and IPv6 resolver addresses" << std::endl;
+        exit(1);
     }
 
     exit_code = picoquic_slipstream_client(

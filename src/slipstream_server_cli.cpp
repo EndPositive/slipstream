@@ -43,6 +43,7 @@ static int run_server(int argc, char** argv) {
 
     exit_code = picoquic_slipstream_server(
         args.listen_port,
+        args.listen_ipv6,
         (char*)args.cert.c_str(),
         (char*)args.key.c_str(),
         &target_address,

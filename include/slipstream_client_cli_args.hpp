@@ -10,7 +10,7 @@ struct ClientArgs : MainArguments<ClientArgs> {
     using MainArguments<ClientArgs>::MainArguments;
 
     int listen_port = option("tcp-listen-port", 'l', "Listen port (default: 5201)") = 5201;
-    std::vector<std::string> resolver = option("resolver", 'r', "Slipstream server resolver address (e.g., 1.1.1.1 or 8.8.8.8:53). Can be specified multiple times. (Required)");
+    std::vector<std::string> resolver = option("resolver", 'r', "Slipstream server resolver address (e.g., 1.1.1.1, 8.8.8.8:53, or [2001:db8::1]:53 for IPv6). Can be specified multiple times. (Required)");
     std::string congestion_control = option("congestion-control", 'c', "Congestion control algorithm (bbr, dcubic) (default: dcubic)") = "dcubic";
     bool gso = option('g', "GSO enabled (true/false) (default: false). Use --gso or --gso=true to enable.");
     std::string domain = option("domain", 'd', "Domain name used for the covert channel (Required)");
