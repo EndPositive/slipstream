@@ -17,3 +17,6 @@ unbound.conf
 unbound2.conf
 
 .cache
+
+# CodeQL artifacts
+_codeql_*
