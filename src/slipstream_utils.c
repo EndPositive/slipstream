@@ -65,3 +65,25 @@ void print_sockaddr_ip_and_port(struct sockaddr_storage *addr_storage) {
 
     DBG_PRINTF("%s:%d", ip_str, port);
 }
+
+char* to_uppercase(const char* str, size_t len) {
+    if (str == NULL || len == 0) {
+        return NULL;
+    }
+    
+    char* uppercase_str = malloc(len + 1);
+    if (uppercase_str == NULL) {
+        return NULL;
+    }
+    
+    for (size_t i = 0; i < len; i++) {
+        if (str[i] >= 'a' && str[i] <= 'z') {
+            uppercase_str[i] = str[i] - 'a' + 'A';
+        } else {
+            uppercase_str[i] = str[i];
+        }
+    }
+    uppercase_str[len] = '\0';
+    
+    return uppercase_str;
+}

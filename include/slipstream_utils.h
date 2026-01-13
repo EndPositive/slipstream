@@ -9,4 +9,6 @@ void sockaddr_dummy(struct sockaddr_storage *addr_storage);
 
 void print_sockaddr_ip_and_port(struct sockaddr_storage *addr_storage);
 
+char* to_uppercase(const char* str, size_t len);
+
 #endif //SLIPSTREAM_UTILS_H
