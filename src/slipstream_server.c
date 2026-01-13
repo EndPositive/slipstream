@@ -185,7 +185,6 @@ ssize_t server_decode(void* slot_p, void* callback_ctx, unsigned char** dest_buf
     char* decoded_buf = malloc(encoded_len);
     const size_t decoded_len = b32_decode(decoded_buf, uppercase_buf, encoded_len, false);
     free(uppercase_buf);
-    
     if (decoded_len == (size_t) -1) {
         free(decoded_buf);
         DBG_PRINTF("error decoding base32: %lu", decoded_len);
