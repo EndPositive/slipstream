@@ -174,8 +174,18 @@ ssize_t server_decode(void* slot_p, void* callback_ctx, unsigned char** dest_buf
     data_buf[data_len] = '\0';
     const size_t encoded_len = slipstream_inline_undotify(data_buf, data_len);
 
+    // Convert to uppercase for case-insensitive base32 decoding
+    char* uppercase_buf = to_uppercase(data_buf, encoded_len);
+    if (!uppercase_buf) {
+        DBG_PRINTF("Memory allocation failed for uppercase buffer", NULL);
+        slot->error = RCODE_SERVER_FAILURE;
+        return 0;
+    }
+
     char* decoded_buf = malloc(encoded_len);
-    const size_t decoded_len = b32_decode(decoded_buf, data_buf, encoded_len, false);
+    const size_t decoded_len = b32_decode(decoded_buf, uppercase_buf, encoded_len, false);
+    free(uppercase_buf);
+    
     if (decoded_len == (size_t) -1) {
         free(decoded_buf);
         DBG_PRINTF("error decoding base32: %lu", decoded_len);

@@ -5,6 +5,7 @@ qlog/
 .tmp.*
 .DS_Store
 build/
+builddir/
 subprojects/.wraplock
 
 sample_ticket_store.bin
