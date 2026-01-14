@@ -5,7 +5,6 @@ qlog/
 .tmp.*
 .DS_Store
 build/
-builddir/
 subprojects/.wraplock
 
 sample_ticket_store.bin
@@ -17,6 +16,3 @@ unbound.conf
 unbound2.conf
 
 .cache
-
-# CodeQL artifacts
-_codeql_*
