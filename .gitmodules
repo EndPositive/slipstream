@@ -6,7 +6,7 @@
 	url = https://github.com/spc476/SPCDNS.git
 [submodule "extern/lua-resty-base-encoding"]
 	path = extern/lua-resty-base-encoding
-	url = https://github.com/spacewander/lua-resty-base-encoding.git
+	url = https://github.com/EndPositive/lua-resty-base-encoding.git
 [submodule "extern/quick_arg_parser"]
 	path = extern/quick_arg_parser
 	url = https://github.com/Dugy/quick_arg_parser.git
