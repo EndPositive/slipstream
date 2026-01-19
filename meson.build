@@ -83,6 +83,7 @@ if loglib_enabled
   picoquic_opts.add_cmake_defines(
     {'BUILD_LOGREADER': 'ON'},
   )
+  add_project_arguments('-DBUILD_LOGLIB', language: ['c', 'cpp'])
 else
   picoquic_opts.add_cmake_defines(
     {'BUILD_LOGREADER': 'OFF'},
