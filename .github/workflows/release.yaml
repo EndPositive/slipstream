@@ -35,13 +35,7 @@ jobs:
           pip3 install meson
 
       - name: Configure Meson
-        run: |
-          meson setup \
-            -Db_lto=true \
-            --buildtype=release \
-            --warnlevel=0 \
-            -Ddefault_library=static \
-            meson-build-release
+        run: meson setup meson-build-release --buildtype=release --warnlevel=0 -Ddefault_library=static
 
       - name: Build with Ninja
         run: |
