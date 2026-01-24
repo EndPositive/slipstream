@@ -33,6 +33,8 @@ FROM gcr.io/distroless/base-debian12 AS runtime
 
 WORKDIR /usr/src/app
 
+COPY --from=builder /lib/x86_64-linux-gnu/libgcc_s.so.1 /lib/x86_64-linux-gnu/
+
 COPY ./certs/ ./certs/
 
 ENV PATH=/usr/src/app/:$PATH
