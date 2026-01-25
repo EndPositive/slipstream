@@ -25,7 +25,7 @@ size_t slipstream_inline_dotify(char * __restrict__ buf, size_t buflen, size_t l
 
     // Move characters right-to-left, inserting dots
     while (current_pos > 0) {
-        if (current_pos == next_dot) {
+        if (current_pos == next_dot && next_dot != len) {
             *dst-- = '.';               // Dot. Because rules are rules, even for dots.
             next_dot -= 57;             // Next dot is 57 chars back.
             current_pos--;              // Account for the char space the dot took.
