@@ -257,7 +257,18 @@ static void slipstream_server_free_stream_context(slipstream_server_ctx_t* serve
         server_ctx->first_stream = stream_ctx->next_stream;
     }
 
-    stream_ctx->fd = close(stream_ctx->fd);
+    if (stream_ctx->fd >= 0) {
+        close(stream_ctx->fd);
+        stream_ctx->fd = -1;
+    }
+    if (stream_ctx->pipefd[0] >= 0) {
+        close(stream_ctx->pipefd[0]);
+        stream_ctx->pipefd[0] = -1;
+    }
+    if (stream_ctx->pipefd[1] >= 0) {
+        close(stream_ctx->pipefd[1]);
+        stream_ctx->pipefd[1] = -1;
+    }
 
     free(stream_ctx);
 }
@@ -564,9 +575,11 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
         }
         if (fin_or_event == picoquic_callback_stream_fin) {
             DBG_PRINTF("[stream_id=%d] fin", stream_ctx->stream_id);
-            /* Close the local_sock fd */
-            close(stream_ctx->fd);
-            stream_ctx->fd = -1;
+            /* Close pipe write-end so io_copy thread sees EOF and exits */
+            if (stream_ctx->pipefd[1] >= 0) {
+                close(stream_ctx->pipefd[1]);
+                stream_ctx->pipefd[1] = -1;
+            }
             picoquic_unlink_app_stream_ctx(cnx, stream_id);
         }
         break;
@@ -591,12 +604,13 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
     case picoquic_callback_application_close: /* Received application close */
         DBG_PRINTF("Connection closed.", NULL);
         if (server_ctx != NULL) {
+            picoquic_network_thread_ctx_t* thread_ctx = server_ctx->thread_ctx;
             slipstream_server_free_context(server_ctx);
+            /* Remove the application callback */
+            picoquic_set_callback(cnx, NULL, NULL);
+            picoquic_close(cnx, 0);
+            picoquic_wake_up_network_thread(thread_ctx);
         }
-        /* Remove the application callback */
-        picoquic_set_callback(cnx, NULL, NULL);
-        picoquic_close(cnx, 0);
-        picoquic_wake_up_network_thread(server_ctx->thread_ctx);
         break;
     case picoquic_callback_prepare_to_send:
         /* Active sending API */
