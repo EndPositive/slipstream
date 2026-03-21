@@ -195,6 +195,7 @@ typedef struct st_slipstream_server_stream_ctx_t {
     int pipefd[2];
     uint64_t stream_id;
     volatile sig_atomic_t set_active;
+    volatile sig_atomic_t polling_active;
 } slipstream_server_stream_ctx_t;
 
 typedef struct st_slipstream_server_ctx_t {
@@ -397,7 +398,7 @@ void* slipstream_server_poller(void* arg) {
         break;
     }
 
-
+    args->stream_ctx->polling_active = 0;
     free(args);
     pthread_exit(NULL);
 }
@@ -640,23 +641,28 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
                     (void)picoquic_provide_stream_data_buffer(bytes, 0, 0, 0);
                     DBG_PRINTF("[stream_id=%d] recv->quic_send: empty, disactivate", stream_ctx->stream_id);
 
-                    slipstream_server_poller_args* args = malloc(sizeof(slipstream_server_poller_args));
-                    args->fd = stream_ctx->fd;
-                    args->cnx = cnx;
-                    args->server_ctx = server_ctx;
-                    args->stream_ctx = stream_ctx;
+                    if (!stream_ctx->polling_active) {
+                        stream_ctx->polling_active = 1;
 
-                    pthread_t thread;
-                    if (pthread_create(&thread, NULL, slipstream_server_poller, args) != 0) {
-                        perror("pthread_create() failed for thread1");
-                        free(args);
-                    }
+                        slipstream_server_poller_args* args = malloc(sizeof(slipstream_server_poller_args));
+                        args->fd = stream_ctx->fd;
+                        args->cnx = cnx;
+                        args->server_ctx = server_ctx;
+                        args->stream_ctx = stream_ctx;
+
+                        pthread_t thread;
+                        if (pthread_create(&thread, NULL, slipstream_server_poller, args) != 0) {
+                            perror("pthread_create() failed for thread1");
+                            stream_ctx->polling_active = 0;
+                            free(args);
+                        }
 #ifdef __APPLE__
-                    pthread_setname_np("slipstream_server_poller");
+                        pthread_setname_np("slipstream_server_poller");
 #else
-                    pthread_setname_np(thread, "slipstream_server_poller");
+                        pthread_setname_np(thread, "slipstream_server_poller");
 #endif
-                    pthread_detach(thread);
+                        pthread_detach(thread);
+                    }
                 }
                 if (bytes_read == 0) {
                     DBG_PRINTF("[stream_id=%d] recv: closed stream", stream_ctx->stream_id);
