@@ -426,12 +426,12 @@ void* slipstream_io_copy(void* arg) {
         addr_len = sizeof(struct sockaddr_in6);
     } else {
         perror("Invalid address family");
-        return NULL;
+        goto cleanup;
     }
 
     if (connect(socket, (struct sockaddr*)&server_ctx->upstream_addr, addr_len) < 0) {
         perror("connect() failed");
-        return NULL;
+        goto cleanup;
     }
 
     DBG_PRINTF("[%lu:%d] setup pipe done", stream_ctx->stream_id, stream_ctx->fd);
@@ -452,7 +452,7 @@ void* slipstream_io_copy(void* arg) {
         DBG_PRINTF("[%lu:%d] read %d bytes", stream_ctx->stream_id, stream_ctx->fd, bytes_read);
         if (bytes_read < 0) {
             perror("recv failed");
-            return NULL;
+            goto cleanup;
         } else if (bytes_read == 0) {
             // End of stream - source socket closed connection
             break;
@@ -465,13 +465,17 @@ void* slipstream_io_copy(void* arg) {
             ssize_t bytes_written = send(socket, p, remaining, 0);
             if (bytes_written < 0) {
                 perror("send failed");
-                return NULL;
+                goto cleanup;
             }
             remaining -= bytes_written;
             p += bytes_written;
         }
     }
 
+cleanup:
+    /* Don't close FDs here — free_stream_context owns them.
+     * Closing from this thread races with the main thread's ioctl/recv. */
+    free(args);
     return NULL;
 }
 
@@ -562,6 +566,8 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
                     /* Connection closed */
                     DBG_PRINTF("[stream_id=%d] send: closed stream", stream_ctx->stream_id);
 
+                    picoquic_unlink_app_stream_ctx(cnx, stream_id);
+                    slipstream_server_free_stream_context(server_ctx, stream_ctx);
                     (void)picoquic_reset_stream(cnx, stream_id, SLIPSTREAM_FILE_CANCEL_ERROR);
                     return 0;
                 }
@@ -570,18 +576,16 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
                 }
 
                 DBG_PRINTF("[stream_id=%d] send: error: %s (%d)", stream_id, strerror(errno), errno);
+                picoquic_unlink_app_stream_ctx(cnx, stream_id);
+                slipstream_server_free_stream_context(server_ctx, stream_ctx);
                 (void)picoquic_reset_stream(cnx, stream_id, SLIPSTREAM_INTERNAL_ERROR);
                 return 0;
             }
         }
         if (fin_or_event == picoquic_callback_stream_fin) {
             DBG_PRINTF("[stream_id=%d] fin", stream_ctx->stream_id);
-            /* Close pipe write-end so io_copy thread sees EOF and exits */
-            if (stream_ctx->pipefd[1] >= 0) {
-                close(stream_ctx->pipefd[1]);
-                stream_ctx->pipefd[1] = -1;
-            }
             picoquic_unlink_app_stream_ctx(cnx, stream_id);
+            slipstream_server_free_stream_context(server_ctx, stream_ctx);
         }
         break;
     case picoquic_callback_stop_sending: /* Should not happen, treated as reset */
@@ -624,7 +628,8 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
             // DBG_PRINTF("[stream_id=%d] recv->quic_send (available %d)", stream_id, length_available);
             if (ret < 0) {
                 DBG_PRINTF("[stream_id=%d] ioctl error: %s (%d)", stream_ctx->stream_id, strerror(errno), errno);
-                /* TODO: why would it return an error? */
+                picoquic_unlink_app_stream_ctx(cnx, stream_id);
+                slipstream_server_free_stream_context(server_ctx, stream_ctx);
                 (void)picoquic_reset_stream(cnx, stream_id, SLIPSTREAM_INTERNAL_ERROR);
                 break;
             }
@@ -666,6 +671,8 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
                 }
                 if (bytes_read == 0) {
                     DBG_PRINTF("[stream_id=%d] recv: closed stream", stream_ctx->stream_id);
+                    picoquic_unlink_app_stream_ctx(cnx, stream_id);
+                    slipstream_server_free_stream_context(server_ctx, stream_ctx);
                     (void)picoquic_reset_stream(cnx, stream_id, SLIPSTREAM_FILE_CANCEL_ERROR);
                     return 0;
                 }
@@ -687,12 +694,15 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
             // DBG_PRINTF("[%lu:%d] recv->quic_send recv done %d bytes into quic\n", stream_id, stream_ctx->fd, bytes_read);
             if (bytes_read == 0) {
                 DBG_PRINTF("Closed connection on sock %d on recv", stream_ctx->fd);
+                picoquic_unlink_app_stream_ctx(cnx, stream_id);
+                slipstream_server_free_stream_context(server_ctx, stream_ctx);
                 (void)picoquic_reset_stream(cnx, stream_id, SLIPSTREAM_FILE_CANCEL_ERROR);
                 return 0;
             }
             if (bytes_read < 0) {
                 DBG_PRINTF("recv: %s (%d)", strerror(errno), errno);
-                /* There should be bytes available, so a return value of 0 is an error */
+                picoquic_unlink_app_stream_ctx(cnx, stream_id);
+                slipstream_server_free_stream_context(server_ctx, stream_ctx);
                 (void)picoquic_reset_stream(cnx, stream_id, SLIPSTREAM_INTERNAL_ERROR);
                 return 0;
             }
