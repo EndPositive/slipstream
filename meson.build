@@ -6,12 +6,12 @@ project(
   license: 'Apache-2.0',
   meson_version: '>=1.0.0',
   default_options: [
-    'buildtype=debugoptimized',
+    'buildtype=release',  # Changed from debugoptimized to release for max performance
     'cpp_std=gnu++11',
     'c_std=gnu11',
     'default_library=shared',
     'warning_level=everything',
-    'b_lto=false',
+    'b_lto=true',  # Link-time optimization ENABLED
   ],
 )
 
@@ -27,6 +27,7 @@ common_sources = files(
   src / 'slipstream_sockloop.c',
   src / 'slipstream_utils.c',
   src / 'slipstream_inline_dots.c',
+  src / 'slipstream_optimizations.c',  # NEW: Optimization implementations
   lua_resty / 'base32.c',
   spcdns / 'codec.c',
   spcdns / 'mappings.c',
@@ -47,6 +48,34 @@ if is_static and host_machine.system() != 'darwin'
     '-static-libgcc',
     '-static-libstdc++',
   ]
+endif
+
+# Performance optimization flags
+add_project_arguments(
+  [
+    '-O3',                    # Maximum optimization
+    '-march=native',          # CPU-specific instructions
+    '-ffast-math',            # Faster math operations
+    '-funroll-loops',         # Loop unrolling
+    '-fno-strict-aliasing',   # Aliasing assumptions
+    '-flto=auto',             # LTO with auto parallelization
+  ],
+  language: ['c', 'cpp']
+)
+
+# Additional optimizations for release build
+if get_option('buildtype') == 'release'
+  add_project_arguments(
+    [
+      '-DNDEBUG',                    # Disable asserts
+      '-fomit-frame-pointer',        # Save stack space
+      '-finline-functions',          # Function inlining
+      '-ffunction-sections',         # Section per function
+      '-fdata-sections',             # Section per data
+    ],
+    language: ['c', 'cpp']
+  )
+  link_args += ['-Wl,--gc-sections']  # Garbage collect unused sections
 endif
 
 # Import the CMake module
