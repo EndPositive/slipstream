@@ -210,6 +210,8 @@ typedef struct st_slipstream_server_stream_ctx_t {
     int fd;
     uint64_t stream_id;
     uint64_t connect_deadline;
+    uint64_t tcp_sent;
+    uint64_t tcp_received;
     bool connecting;
     bool read_wait;
     bool peer_fin;
@@ -231,6 +233,15 @@ typedef struct st_slipstream_server_ctx_t {
     slipstream_server_stream_ctx_t** poll_streams;
     size_t poll_capacity;
 } slipstream_server_ctx_t;
+
+static void slipstream_server_log_error(const slipstream_server_stream_ctx_t* stream,
+                                        const char* operation) {
+    int error = errno;
+    fprintf(stderr, "[stream=%llu fd=%d tcp_tx=%llu tcp_rx=%llu pending=%zu peer_fin=%d send_fin=%d] %s: %s\n",
+        (unsigned long long)stream->stream_id, stream->fd,
+        (unsigned long long)stream->tcp_sent, (unsigned long long)stream->tcp_received,
+        stream->pending_bytes, stream->peer_fin, stream->send_fin, operation, strerror(error));
+}
 
 static void slipstream_server_free_stream_context(slipstream_server_ctx_t* server_ctx,
                                                   slipstream_server_stream_ctx_t* stream_ctx) {
@@ -291,6 +302,7 @@ static slipstream_server_stream_ctx_t* slipstream_server_create_stream_ctx(
     if (stream_ctx == NULL) {
         return NULL;
     }
+    stream_ctx->stream_id = stream_id;
     stream_ctx->fd = socket(af, SOCK_STREAM, 0);
     if (stream_ctx->fd < 0) {
         perror("socket() failed");
@@ -311,14 +323,13 @@ static slipstream_server_stream_ctx_t* slipstream_server_create_stream_ctx(
 #endif
     if (connect(stream_ctx->fd, (struct sockaddr*)&server_ctx->upstream_addr, addr_len) < 0) {
         if (errno != EINPROGRESS && errno != EINTR) {
-            perror("connect() failed");
+            slipstream_server_log_error(stream_ctx, "connect() failed");
             goto fail;
         }
         stream_ctx->connecting = true;
         stream_ctx->connect_deadline = picoquic_current_time() + SLIPSTREAM_CONNECT_TIMEOUT_US;
     }
     stream_ctx->owner = server_ctx;
-    stream_ctx->stream_id = stream_id;
     stream_ctx->read_wait = true;
     stream_ctx->next_stream = server_ctx->first_stream;
     if (stream_ctx->next_stream != NULL) {
@@ -353,13 +364,14 @@ static int slipstream_server_flush(slipstream_server_stream_ctx_t* stream_ctx) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 return 0;
             }
-            perror("send() failed");
+            slipstream_server_log_error(stream_ctx, "send() failed");
             return -1;
         }
         if (n == 0) {
             fprintf(stderr, "send() made no progress\n");
             return -1;
         }
+        stream_ctx->tcp_sent += (uint64_t)n;
         pending->offset += (size_t)n;
         stream_ctx->pending_bytes -= (size_t)n;
         budget -= (size_t)n;
@@ -373,10 +385,13 @@ static int slipstream_server_flush(slipstream_server_stream_ctx_t* stream_ctx) {
     }
     if (stream_ctx->peer_fin && stream_ctx->pending_first == NULL && !stream_ctx->write_shutdown) {
         /* FIN is a half-close, propagated only after queued request data. */
-        if (shutdown(stream_ctx->fd, SHUT_WR) != 0) {
-            perror("shutdown(SHUT_WR) failed");
+        if (shutdown(stream_ctx->fd, SHUT_WR) != 0 && errno != ENOTCONN) {
+            slipstream_server_log_error(stream_ctx, "shutdown(SHUT_WR) failed");
             return -1;
         }
+        /* ENOTCONN means TCP has already left the connected state. There
+         * are no pending writes here. Still drain any readable response/EOF
+         * through prepare_to_send instead of resetting the QUIC stream. */
         stream_ctx->write_shutdown = true;
     }
     return 0;
@@ -502,7 +517,7 @@ static int slipstream_server_poll(slipstream_server_ctx_t* default_ctx,
                 if (error != 0) {
                     errno = error;
                 }
-                perror("connect() failed");
+                slipstream_server_log_error(stream, "connect() failed");
                 slipstream_server_abort_stream(ctx, stream, SLIPSTREAM_FILE_CANCEL_ERROR);
                 continue;
             }
@@ -674,11 +689,12 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
                 stream_ctx->read_wait = true;
             } else {
                 errno = error;
-                perror("recv() failed");
+                slipstream_server_log_error(stream_ctx, "recv() failed");
                 slipstream_server_abort_stream(server_ctx, stream_ctx, SLIPSTREAM_FILE_CANCEL_ERROR);
             }
             return 0;
         }
+        stream_ctx->tcp_received += (uint64_t)n;
         uint8_t* buffer = picoquic_provide_stream_data_buffer(bytes, (size_t)n, n == 0, n > 0);
         if (buffer == NULL) {
             slipstream_server_abort_stream(server_ctx, stream_ctx, SLIPSTREAM_INTERNAL_ERROR);
