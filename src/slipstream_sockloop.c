@@ -50,6 +50,68 @@ static int udp_gso_available = 0;
 #endif
 
 
+static int slipstream_packet_loop_open_bound_socket(
+    const struct sockaddr_storage* listen_address, uint16_t local_port,
+    int socket_buffer_size, picoquic_socket_ctx_t* s_ctx) {
+#ifdef _WINDOWS
+    (void)listen_address;
+    (void)local_port;
+    (void)socket_buffer_size;
+    (void)s_ctx;
+    fprintf(stderr, "--dns-listen-address is not supported on Windows\n");
+    return -1;
+#else
+    struct sockaddr_storage addr = *listen_address;
+    socklen_t addr_len;
+    int recv_set = 0;
+    int send_set = 0;
+
+    if (addr.ss_family == AF_INET) {
+        ((struct sockaddr_in*)&addr)->sin_port = htons(local_port);
+        addr_len = sizeof(struct sockaddr_in);
+    } else if (addr.ss_family == AF_INET6) {
+        ((struct sockaddr_in6*)&addr)->sin6_port = htons(local_port);
+        addr_len = sizeof(struct sockaddr_in6);
+    } else {
+        fprintf(stderr, "Unsupported DNS listen address family: %d\n", addr.ss_family);
+        return -1;
+    }
+
+    s_ctx->fd = socket(addr.ss_family, SOCK_DGRAM, IPPROTO_UDP);
+    if (s_ctx->fd == INVALID_SOCKET) {
+        perror("Unable to create DNS listen socket");
+        return -1;
+    }
+    s_ctx->af = addr.ss_family;
+    s_ctx->port = local_port;
+
+    if (picoquic_socket_set_ecn_options(s_ctx->fd, s_ctx->af, &recv_set, &send_set) != 0 ||
+        picoquic_socket_set_pkt_info(s_ctx->fd, s_ctx->af) != 0 ||
+        picoquic_socket_set_pmtud_options(s_ctx->fd, s_ctx->af) != 0) {
+        perror("Unable to configure DNS listen socket");
+        picoquic_packet_loop_close_socket(s_ctx);
+        return -1;
+    }
+
+    if (bind(s_ctx->fd, (struct sockaddr*)&addr, addr_len) != 0) {
+        perror("Unable to bind DNS listen socket");
+        picoquic_packet_loop_close_socket(s_ctx);
+        return -1;
+    }
+
+    if (socket_buffer_size > 0) {
+        if (setsockopt(s_ctx->fd, SOL_SOCKET, SO_SNDBUF, &socket_buffer_size, sizeof(socket_buffer_size)) != 0 ||
+            setsockopt(s_ctx->fd, SOL_SOCKET, SO_RCVBUF, &socket_buffer_size, sizeof(socket_buffer_size)) != 0) {
+            perror("Unable to configure DNS listen socket buffers");
+            picoquic_packet_loop_close_socket(s_ctx);
+            return -1;
+        }
+    }
+
+    return 1;
+#endif
+}
+
 int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_socket_ctx_t* s_ctx) {
     picoquic_quic_t* quic = thread_ctx->quic;
     picoquic_packet_loop_param_t* param = thread_ctx->param;
@@ -324,16 +386,27 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
     return thread_ctx->return_code;
 }
 
-void* slipstream_packet_loop(picoquic_network_thread_ctx_t* thread_ctx) {
+void* slipstream_packet_loop(picoquic_network_thread_ctx_t* thread_ctx,
+                             const struct sockaddr_storage* listen_address) {
     const picoquic_packet_loop_param_t* param = thread_ctx->param;
     if (!param->do_not_use_gso && param->encode != NULL && !param->is_client) {
         DBG_FATAL_PRINTF("%s", "GSO disabled because encoding is enabled and server mode");
     }
 
     picoquic_socket_ctx_t s_ctx = {0};
-    if (picoquic_packet_loop_open_sockets(param->local_port,
-        param->local_af, param->socket_buffer_size,
-        0, param->do_not_use_gso, &s_ctx) <= 0) {
+    s_ctx.fd = INVALID_SOCKET;
+    int nb_sockets;
+    if (listen_address != NULL) {
+        nb_sockets = slipstream_packet_loop_open_bound_socket(
+            listen_address, param->local_port, param->socket_buffer_size, &s_ctx);
+    } else {
+        nb_sockets = picoquic_packet_loop_open_sockets(param->local_port,
+            param->local_af, param->socket_buffer_size,
+            0, param->do_not_use_gso, &s_ctx);
+    }
+    if (nb_sockets <= 0) {
+        /* PicoQUIC's wildcard helper leaves its failing socket open. */
+        picoquic_packet_loop_close_socket(&s_ctx);
         thread_ctx->return_code = PICOQUIC_ERROR_UNEXPECTED_ERROR;
         return NULL;
     }

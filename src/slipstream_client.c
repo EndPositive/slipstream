@@ -836,7 +836,7 @@ int picoquic_slipstream_client(int listen_port, struct st_address_t* server_addr
 
     signal(SIGTERM, client_sighandler);
     // picoquic_packet_loop_v3(&thread_ctx);
-    slipstream_packet_loop(&thread_ctx);
+    slipstream_packet_loop(&thread_ctx, NULL);
     ret = thread_ctx.return_code;
 
     /* And finish. */

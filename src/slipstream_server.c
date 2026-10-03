@@ -690,7 +690,8 @@ int slipstream_server_callback(picoquic_cnx_t* cnx,
     return ret;
 }
 
-int picoquic_slipstream_server(int server_port, bool listen_ipv6, const char* server_cert, const char* server_key,
+int picoquic_slipstream_server(int server_port, bool listen_ipv6, const struct sockaddr_storage* listen_address,
+                               const char* server_cert, const char* server_key,
                                struct sockaddr_storage* target_address, const char* domain_name) {
     /* Start: start the QUIC process with cert and key files */
     int ret = 0;
@@ -750,7 +751,9 @@ int picoquic_slipstream_server(int server_port, bool listen_ipv6, const char* se
     picoquic_set_default_congestion_algorithm(quic, slipstream_server_cc_algorithm);
 
     picoquic_packet_loop_param_t param = {0};
-    if (listen_ipv6) {
+    if (listen_address != NULL) {
+        param.local_af = listen_address->ss_family;
+    } else if (listen_ipv6) {
         param.local_af = AF_INET6;
     } else {
         param.local_af = AF_INET;
@@ -775,7 +778,7 @@ int picoquic_slipstream_server(int server_port, bool listen_ipv6, const char* se
 
     signal(SIGTERM, server_sighandler);
     // picoquic_packet_loop_v3(&thread_ctx);
-    slipstream_packet_loop(&thread_ctx);
+    slipstream_packet_loop(&thread_ctx, listen_address);
     ret = thread_ctx.return_code;
 
     /* And finish. */
