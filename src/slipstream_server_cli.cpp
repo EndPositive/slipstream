@@ -1,3 +1,6 @@
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -24,6 +27,19 @@ struct ServerArgs : MainArguments<ServerArgs> {
 
 const std::string ServerArgs::version = "slipstream-server 0.1";
 
+/* Preflight file access so a missing PEM does not become an unexplained -1. */
+static bool check_readable_file(const std::string& path, const char* description) {
+    FILE* file = std::fopen(path.c_str(), "rb");
+    if (file == NULL) {
+        const int error = errno;
+        std::cerr << "Error: unable to open " << description << " file: "
+                  << path << ": " << std::strerror(error) << std::endl;
+        return false;
+    }
+    std::fclose(file);
+    return true;
+}
+
 int main(int argc, char** argv) {
     int exit_code = 0;
     ServerArgs args(argc, argv);
@@ -45,6 +61,14 @@ int main(int argc, char** argv) {
     if (args.domain.empty()) {
         std::cerr << "Server error: Missing required --domain option" << std::endl;
         exit(1);
+    }
+
+    const bool cert_readable = check_readable_file(args.cert, "certificate");
+    const bool key_readable = check_readable_file(args.key, "private key");
+    if (!cert_readable || !key_readable) {
+        std::cerr << "Use --cert PATH and --key PATH to select readable PEM files."
+                  << std::endl;
+        return 1;
     }
 
     // Process target address
