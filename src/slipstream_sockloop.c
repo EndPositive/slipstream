@@ -185,7 +185,7 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
             int if_index = param->dest_if;
             if (slot->error == RCODE_OKAY) {
                 picoquic_connection_id_t log_cid;
-                int ret;
+                int ret = 0;
                 if (!param->is_client && slot->cnx) {
                     ret = picoquic_prepare_packet_ex(slot->cnx, slot->path_id, loop_time,
                         send_buffer, send_buffer_size, &send_length,

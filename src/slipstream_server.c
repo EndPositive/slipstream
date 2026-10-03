@@ -86,11 +86,9 @@ ssize_t server_encode(void* slot_p, void* callback_ctx, unsigned char** dest_buf
 
         response.ancount = 1;
         response.answers = (dns_answer_t *)&answer_txt;
-    } else {
-        if (slot->error == RCODE_OKAY) {
-            response.rcode = RCODE_NAME_ERROR;
-        }
     }
+    /* An empty successful poll is NOERROR/NODATA, not a nonexistent name.
+     * Preserve actual decode errors already stored in slot->error. */
 
     response.arcount = 1;
     response.additional = &edns;
