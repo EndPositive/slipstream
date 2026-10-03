@@ -1,3 +1,6 @@
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -9,6 +12,7 @@ struct ServerArgs : MainArguments<ServerArgs> {
     using MainArguments<ServerArgs>::MainArguments;
 
     int listen_port = option("dns-listen-port", 'l', "DNS listen port (default: 53)") = 53;
+    std::string listen_address = option("dns-listen-address", 'b', "DNS listen IPv4/IPv6 literal (default: wildcard; overrides --dns-listen-ipv6)");
     bool listen_ipv6 = option("dns-listen-ipv6", '6', "DNS listen on IPv6 (default: false)") = false;
     std::string target_address = option("target-address", 'a', "Target server address (default: 127.0.0.1:5201)") = "127.0.0.1:5201";    std::string cert = option("cert", 'c', "Certificate file path (default: certs/cert.pem)") = "certs/cert.pem";
     std::string key = option("key", 'k', "Private key file path (default: certs/key.pem)") = "certs/key.pem";
@@ -23,6 +27,19 @@ struct ServerArgs : MainArguments<ServerArgs> {
 };
 
 const std::string ServerArgs::version = "slipstream-server 0.1";
+
+/* Preflight file access so a missing PEM does not become an unexplained -1. */
+static bool check_readable_file(const std::string& path, const char* description) {
+    FILE* file = std::fopen(path.c_str(), "rb");
+    if (file == NULL) {
+        const int error = errno;
+        std::cerr << "Error: unable to open " << description << " file: "
+                  << path << ": " << std::strerror(error) << std::endl;
+        return false;
+    }
+    std::fclose(file);
+    return true;
+}
 
 int main(int argc, char** argv) {
     int exit_code = 0;
@@ -45,6 +62,37 @@ int main(int argc, char** argv) {
     if (args.domain.empty()) {
         std::cerr << "Server error: Missing required --domain option" << std::endl;
         exit(1);
+    }
+
+    if (args.listen_port <= 0 || args.listen_port > 65535) {
+        std::cerr << "Invalid DNS listen port: " << args.listen_port << std::endl;
+        return 1;
+    }
+
+    struct sockaddr_storage dns_listen_address = {};
+    const struct sockaddr_storage* dns_listen_address_ptr = NULL;
+    if (!args.listen_address.empty()) {
+        struct sockaddr_in* v4 = (struct sockaddr_in*)&dns_listen_address;
+        struct sockaddr_in6* v6 = (struct sockaddr_in6*)&dns_listen_address;
+        if (inet_pton(AF_INET, args.listen_address.c_str(), &v4->sin_addr) == 1) {
+            v4->sin_family = AF_INET;
+        } else if (inet_pton(AF_INET6, args.listen_address.c_str(), &v6->sin6_addr) == 1) {
+            v6->sin6_family = AF_INET6;
+        } else {
+            std::cerr << "Invalid DNS listen address '" << args.listen_address
+                      << "': expected an IPv4 or IPv6 literal (without a port)"
+                      << std::endl;
+            return 1;
+        }
+        dns_listen_address_ptr = &dns_listen_address;
+    }
+
+    const bool cert_readable = check_readable_file(args.cert, "certificate");
+    const bool key_readable = check_readable_file(args.key, "private key");
+    if (!cert_readable || !key_readable) {
+        std::cerr << "Use --cert PATH and --key PATH to select readable PEM files."
+                  << std::endl;
+        return 1;
     }
 
     // Process target address
@@ -71,6 +119,7 @@ int main(int argc, char** argv) {
     exit_code = picoquic_slipstream_server(
         args.listen_port,
         args.listen_ipv6,
+        dns_listen_address_ptr,
         (char*)args.cert.c_str(),
         (char*)args.key.c_str(),
         &target_address,
