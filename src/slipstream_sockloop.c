@@ -140,8 +140,13 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
     while (!thread_ctx->thread_should_close) {
         if (loop_callback) {
             int ret = loop_callback(quic, picoquic_packet_loop_before_select, loop_callback_ctx, s_ctx);
-            if (ret < 0) {
-                break;
+            if (param->is_client) {
+                /* Preserve the existing client callback/exit convention. */
+                if (ret < 0) {
+                    break;
+                }
+            } else if (ret != 0) {
+                return ret;
             }
         }
 
@@ -151,8 +156,10 @@ int slipstream_packet_loop_(picoquic_network_thread_ctx_t* thread_ctx, picoquic_
             int64_t delta_t = 0;
 
             if (!param->is_client && nb_slots_written == 0) {
-                // Server mode: wait for a packet to arrive
-                delta_t = 10000000;
+                /* The server's before_select callback already polls the DNS
+                 * socket together with its upstream TCP sockets. Do not wait
+                 * a second time and delay TCP writes/connection teardown. */
+                delta_t = 0;
             }
 
             if (param->is_client && nb_slots_written == 0) {
