@@ -101,6 +101,12 @@ slipstream_cli_deps = [
   dependency('threads'), # for picoquic
   picoquic_proj.dependency('picoquic-core'),
 ]
+picoquic_targets = picoquic_proj.target_list()
+foreach ptls_target : ['picotls-core', 'picotls-openssl', 'picotls-minicrypto', 'picotls-fusion']
+  if ptls_target in picoquic_targets
+    slipstream_cli_deps += picoquic_proj.dependency(ptls_target)
+  endif
+endforeach
 # Link optional picoquic logging
 if loglib_enabled
   slipstream_cli_deps += picoquic_proj.dependency('picoquic-log')
